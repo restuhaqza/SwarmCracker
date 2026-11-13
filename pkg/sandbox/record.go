@@ -188,6 +188,18 @@ type Record struct {
 	// resolved addresses live in the namespace, not here.
 	Egress []string `json:"egress,omitempty"`
 
+	// VCPUs and MemoryMB are the size the sandbox was started with. A checkpoint
+	// records them beside its images, and a fork resumes with the same memory: the
+	// image is exactly that much memory, so it is not a value a clone chooses.
+	VCPUs    int `json:"vcpus,omitempty"`
+	MemoryMB int `json:"memoryMB,omitempty"`
+
+	// ForkedFrom names the checkpoint this sandbox was resumed from, and is empty for
+	// a sandbox created from a template. It is what makes a clone's lineage readable
+	// without keeping a second index, and what a caller shows to explain where a
+	// sandbox came from.
+	ForkedFrom string `json:"forkedFrom,omitempty"`
+
 	// Disk is the per-instance disk this node materialized for the sandbox: the
 	// copy of the template's artifact that the guest's writes land in (through the
 	// jail's staged copy). It is the sandbox's own, so rm frees it.

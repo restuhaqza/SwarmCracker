@@ -1,0 +1,355 @@
+package agent
+
+// The `quiesce` operation, from both sides: what the guest does to the filesystems,
+// what the wire carries, and what a caller holds after a refusal.
+//
+// The real operation blocks this process's filesystem, so every test replaces the
+// three seams it uses — the mount table, the sync and the two ioctls — with fakes
+// that record the order they were called in. The order is the point: a freeze that
+// skipped the sync would leave the checkpoint's disk image missing pages that the
+// memory image still holds, which is the disagreement the operation exists to avoid.
+
+import (
+	"context"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"golang.org/x/sys/unix"
+)
+
+// withQuiesceSeams points the operation at a fixture mount table and replaces its
+// kernel-facing seams. It returns the operations the guest carried out, in order, as
+// "sync", "freeze <mount>" and "thaw <mount>".
+func withQuiesceSeams(t *testing.T, table string, refuse map[string]error) *[]string {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "mounts")
+	require.NoError(t, os.WriteFile(path, []byte(table), 0o644))
+
+	var calls []string
+	originalMounts, originalSync := guestMounts, syncFilesystems
+	originalFreeze, originalThaw := freezeFilesystem, thawFilesystem
+	guestMounts = path
+	syncFilesystems = func() { calls = append(calls, "sync") }
+	freezeFilesystem = func(mount string) (bool, error) {
+		if err := refuse[mount]; err != nil {
+			return false, err
+		}
+		calls = append(calls, "freeze "+mount)
+		return false, nil
+	}
+	thawFilesystem = func(mount string) (bool, error) {
+		calls = append(calls, "thaw "+mount)
+		return false, nil
+	}
+	t.Cleanup(func() {
+		guestMounts, syncFilesystems = originalMounts, originalSync
+		freezeFilesystem, thawFilesystem = originalFreeze, originalThaw
+	})
+	return &calls
+}
+
+// ext4Mounts is a guest with one writable disk-backed filesystem, which is the shape
+// a sandbox's guest has: one root on /dev/vda.
+const ext4Mounts = `/dev/vda / ext4 rw,relatime 0 0
+proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0
+sysfs /sys sysfs rw,nosuid,nodev,noexec,relatime 0 0
+tmpfs /dev/shm tmpfs rw,nosuid,nodev,relatime 0 0
+/dev/vdb /var/lib/extra ext4 ro,relatime 0 0
+`
+
+// TestQuiesceFreezesAfterSyncing pins the order the guest promises: flush first, then
+// block the writers. It is the whole consistency argument for the checkpoint that
+// follows, and a test that only checked "frozen" would pass with the two swapped.
+func TestQuiesceFreezesAfterSyncing(t *testing.T) {
+	calls := withQuiesceSeams(t, ext4Mounts, nil)
+
+	report, err := quiesceGuest(context.Background(), QuiesceFreeze)
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"sync", "freeze /"}, *calls)
+	assert.Equal(t, QuiesceFreeze, report.Action)
+	assert.Equal(t, QuiesceModeFreeze, report.Mode)
+	assert.Equal(t, []string{"/"}, report.Mounts, "only the writable device-backed mount is frozen")
+	assert.False(t, report.Already)
+}
+
+// TestQuiesceIsIdempotent pins the RFC's exit criterion: reaching the same state twice
+// is a success that says so, because a checkpoint retried after a failure must not fail
+// on its own first attempt.
+func TestQuiesceIsIdempotent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mounts")
+	require.NoError(t, os.WriteFile(path, []byte(ext4Mounts), 0o644))
+
+	originalMounts, originalSync := guestMounts, syncFilesystems
+	originalFreeze, originalThaw := freezeFilesystem, thawFilesystem
+	guestMounts = path
+	syncFilesystems = func() {}
+	freezeFilesystem = func(string) (bool, error) { return true, nil }
+	thawFilesystem = func(string) (bool, error) { return true, nil }
+	t.Cleanup(func() {
+		guestMounts, syncFilesystems = originalMounts, originalSync
+		freezeFilesystem, thawFilesystem = originalFreeze, originalThaw
+	})
+
+	frozen, err := quiesceGuest(context.Background(), QuiesceFreeze)
+	require.NoError(t, err)
+	assert.True(t, frozen.Already, "a guest that was already frozen reports it rather than failing")
+
+	thawed, err := quiesceGuest(context.Background(), QuiesceThaw)
+	require.NoError(t, err)
+	assert.True(t, thawed.Already)
+}
+
+// TestQuiesceThawDoesNotSync pins that the release is only a release: syncing on the way
+// out would flush writes the caller may not want made (a fork that was abandoned), and
+// it would make the thaw's cost depend on the workload rather than on one ioctl.
+func TestQuiesceThawReleasesWithoutSyncing(t *testing.T) {
+	calls := withQuiesceSeams(t, ext4Mounts, nil)
+
+	report, err := quiesceGuest(context.Background(), QuiesceThaw)
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"thaw /"}, *calls)
+	assert.Equal(t, QuiesceThaw, report.Action)
+}
+
+// TestQuiesceRefusesWhatItCannotDo pins the three refusals a caller acts on: a direction
+// the op does not have, a guest with nothing to freeze, and a filesystem that will not
+// take the ioctl. Each is an error because a checkpoint taken anyway would claim a
+// consistency it does not have.
+func TestQuiesceRefusesWhatItCannotDo(t *testing.T) {
+	t.Run("an action this build does not have", func(t *testing.T) {
+		calls := withQuiesceSeams(t, ext4Mounts, nil)
+
+		_, err := quiesceGuest(context.Background(), "suspend")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "neither")
+		assert.Empty(t, *calls, "nothing is touched for an action that is not understood")
+	})
+
+	t.Run("a guest with nothing to freeze", func(t *testing.T) {
+		withQuiesceSeams(t, "proc /proc proc rw 0 0\ntmpfs /tmp tmpfs rw 0 0\n", nil)
+
+		_, err := quiesceGuest(context.Background(), QuiesceFreeze)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "no writable filesystem backed by a block device")
+	})
+
+	t.Run("a filesystem that will not freeze", func(t *testing.T) {
+		refused := map[string]error{"/var": unix.EOPNOTSUPP}
+		calls := withQuiesceSeams(t, ext4Mounts+"/dev/vdc /var ext4 rw 0 0\n", refused)
+
+		_, err := quiesceGuest(context.Background(), QuiesceFreeze)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "/var")
+		// The mount before it was frozen; the caller learns which one stopped it, and
+		// the report it gets back is not published as a success.
+		assert.Equal(t, []string{"sync", "freeze /"}, *calls)
+	})
+
+	t.Run("a deadline already spent", func(t *testing.T) {
+		calls := withQuiesceSeams(t, ext4Mounts, nil)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		_, err := quiesceGuest(ctx, QuiesceFreeze)
+		require.ErrorIs(t, err, context.Canceled)
+		assert.Empty(t, *calls)
+	})
+}
+
+// TestWritableDeviceMountsSelectsWhatACheckpointCanCatch pins the selection rule: the
+// filesystems a checkpoint can catch half-written are the writable ones on a block
+// device. Everything else is either rebuilt on boot (proc, sysfs, devtmpfs), cannot
+// disagree with the disk image (a read-only mount), or is not part of the image at all.
+func TestWritableDeviceMountsSelectsWhatACheckpointCanCatch(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mounts")
+	table := `/dev/vda / ext4 rw,relatime 0 0
+/dev/vdb /var/lib/extra ext4 ro,relatime 0 0
+tmpfs /dev/shm tmpfs rw,nosuid 0 0
+proc /proc proc rw 0 0
+/dev/vdc /mnt/with\040space ext4 rw,errors=remount-ro 0 0
+overlay /overlay overlay rw 0 0
+/dev/vdd
+`
+	require.NoError(t, os.WriteFile(path, []byte(table), 0o644))
+
+	mounts, err := writableDeviceMounts(path)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"/", "/mnt/with\\040space"}, mounts,
+		"a mount a checkpoint cannot catch is not frozen, and a truncated line is not a mount")
+
+	_, err = writableDeviceMounts(filepath.Join(t.TempDir(), "absent"))
+	assert.Error(t, err, "a guest whose mount table cannot be read cannot be quiesced")
+}
+
+// TestClientQuiesceOverTheWire is the operation as the node sees it: the report arrives
+// as frames, and a refusal arrives with its own code rather than as a message a caller
+// has to parse.
+func TestClientQuiesceOverTheWire(t *testing.T) {
+	calls := withQuiesceSeams(t, ext4Mounts, nil)
+	conn, _ := newPipePair(t)
+	c := testClient(conn)
+
+	report, err := c.Quiesce(context.Background(), QuiesceFreeze)
+	require.NoError(t, err)
+	assert.Equal(t, QuiesceFreeze, report.Action)
+	assert.Equal(t, []string{"/"}, report.Mounts)
+	assert.Equal(t, []string{"sync", "freeze /"}, *calls)
+
+	released, err := c.Quiesce(context.Background(), QuiesceThaw)
+	require.NoError(t, err)
+	assert.Equal(t, QuiesceThaw, released.Action)
+
+	// A guest that cannot freeze answers with the code for it, and the node refuses
+	// the checkpoint rather than storing an image of unknown consistency.
+	_, err = c.Quiesce(context.Background(), "run")
+	require.Error(t, err)
+	assert.Equal(t, CodeQuiesceFailed, CodeOf(err))
+}
+
+// TestQuiesceIsAdvertised pins the capability handshake: a host must not issue an
+// operation the guest did not advertise, so a build that serves quiesce has to say so.
+func TestQuiesceIsAdvertised(t *testing.T) {
+	assert.Contains(t, Capabilities(), CapQuiesce)
+
+	// And a guest that does not advertise it is refused before its handler runs.
+	conn, _ := newCappedPipePair(t, []string{CapHello, CapExec})
+	c := testClient(conn)
+	_, err := c.Quiesce(context.Background(), QuiesceFreeze)
+	require.Error(t, err)
+	assert.Equal(t, CodeUnsupportedOp, CodeOf(err))
+	assert.Contains(t, err.Error(), "is not advertised by this agent")
+}
+
+// TestThawAllReleasesWhatAFrozenImageCarried pins the release the post-restore hook
+// performs: every writable device-backed filesystem is released, a guest with none is
+// not a failure, and a filesystem that refuses is named.
+func TestThawAllReleasesWhatAFrozenImageCarried(t *testing.T) {
+	calls := withQuiesceSeams(t, ext4Mounts, nil)
+	report, err := thawAll(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, []string{"thaw /"}, *calls)
+	assert.Equal(t, QuiesceThaw, report.Action)
+
+	// A guest whose filesystems are all read-only has nothing to release: that is a
+	// success, not a failure, or an older template could never restore.
+	withQuiesceSeams(t, "proc /proc proc rw 0 0\ntmpfs /tmp tmpfs rw 0 0\n", nil)
+	report, err = thawAll(context.Background())
+	require.NoError(t, err)
+	assert.Empty(t, report.Mounts)
+
+	// A filesystem that refuses the release is an error naming it, so the hook fails
+	// with a cause instead of hanging on the next write.
+	frozen := map[string]error{}
+	calls = withQuiesceSeams(t, ext4Mounts, frozen)
+	original := thawFilesystem
+	thawFilesystem = func(mount string) (bool, error) { return false, unix.EPERM }
+	t.Cleanup(func() { thawFilesystem = original })
+	_, err = thawAll(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "/")
+	assert.Empty(t, *calls, "nothing is recorded as released when the release failed")
+}
+
+// TestPrepareReleasesTheFreezeOnlyWhenQuiesceIsAdvertised pins the contract condition:
+// a resumed image is released by the hook that runs before any write, and an agent that
+// does not advertise quiesce — which cannot have frozen anything — is not asked.
+func TestPrepareReleasesTheFreezeOnlyWhenQuiesceIsAdvertised(t *testing.T) {
+	asked := func(caps []string) []string {
+		calls := withQuiesceSeams(t, ext4Mounts, nil)
+		conn, _ := newCappedPipePair(t, caps)
+		_, _ = testClient(conn).Prepare(context.Background())
+		return *calls
+	}
+
+	withQuiesce := asked([]string{CapHello, CapPrepare, CapQuiesce})
+	assert.Contains(t, withQuiesce, "thaw /", "a guest that advertises quiesce releases the freeze before the hook writes")
+
+	withoutQuiesce := asked([]string{CapHello, CapPrepare})
+	assert.Empty(t, withoutQuiesce, "an older agent cannot have been frozen and is not asked to release anything")
+}
+
+// TestAQuiesceWhoseMountTableCannotBeRead pins the table both directions come from: a guest
+// whose mounts cannot be read is not a guest with nothing to freeze, and a checkpoint that
+// treated it as one would store an image nobody froze. A caller that has already given up
+// freezes nothing at all.
+func TestAQuiesceWhoseMountTableCannotBeRead(t *testing.T) {
+	original := guestMounts
+	guestMounts = filepath.Join(t.TempDir(), "absent-mounts")
+	t.Cleanup(func() { guestMounts = original })
+
+	_, err := quiesceGuest(context.Background(), QuiesceFreeze)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "absent-mounts")
+
+	// The hook's own release reads the same table, and reports it the same way.
+	_, err = thawAll(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "absent-mounts")
+
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = quiesceGuest(cancelled, QuiesceFreeze)
+	require.ErrorIs(t, err, context.Canceled)
+}
+
+// TestTheFreezeWrapperMapsWhatTheKernelSaid pins the layer every other test replaces: the
+// real ioctlFreeze, which is the function that decides whether a guest's writers were
+// stopped. It is exercised directly because a mapping that read an unrelated errno as
+// success would report a frozen filesystem that is still being written — a checkpoint whose
+// memory and disk disagree, taken with no error anywhere.
+func TestTheFreezeWrapperMapsWhatTheKernelSaid(t *testing.T) {
+	// A mount point that is not there: the failure is the open, and it carries an errno a
+	// caller can act on rather than a message to parse.
+	absent := filepath.Join(t.TempDir(), "absent")
+	already, err := ioctlFreeze(absent, fifreeze, unix.EBUSY)
+	require.Error(t, err)
+	assert.False(t, already)
+	assert.Contains(t, err.Error(), "open mount point")
+	assert.ErrorIs(t, err, fs.ErrNotExist)
+
+	// A path that opens but backs no filesystem to freeze. What the kernel answers here
+	// depends on the privilege the test runs with: an unprivileged process is refused the
+	// capability before the filesystem is consulted (EPERM), and a privileged one reaches
+	// the filesystem's own answer (ENOTTY for a file that backs none). So the test takes the
+	// answer it was given and pins the mapping against that, which is the part this function
+	// owns — not the kernel's choice of errno.
+	file := filepath.Join(t.TempDir(), "a-file")
+	require.NoError(t, os.WriteFile(file, []byte("not a filesystem"), 0o600))
+
+	already, err = ioctlFreeze(file, fifreeze, unix.EBUSY)
+	require.Error(t, err, "an errno the caller did not name is a refusal, never an already")
+	assert.False(t, already, "nothing is reported as frozen by a call that failed")
+	assert.Contains(t, err.Error(), "ioctl 0x", "the refusal names the request it issued")
+	var refused unix.Errno
+	require.ErrorAs(t, err, &refused, "the refusal carries the kernel's errno, not a string")
+	assert.NotEqual(t, unix.EBUSY, refused, "this is the kernel's error, not the one freezeMount tolerates")
+
+	// The same error, named by the caller as "already in that state", is success: that is
+	// what makes a retried freeze, and the thaw of a filesystem that was never frozen, work
+	// rather than fail.
+	already, err = ioctlFreeze(file, fifreeze, refused)
+	require.NoError(t, err)
+	assert.True(t, already, "the error named as already-in-that-state is success")
+
+	// The two directions differ only in the request they issue and the errno they read as
+	// success, and neither invents an "already" for a mount point it cannot open.
+	for _, direction := range []struct {
+		name  string
+		apply func(string) (bool, error)
+	}{
+		{"freeze", freezeMount},
+		{"thaw", thawMount},
+	} {
+		already, err := direction.apply(absent)
+		require.Errorf(t, err, direction.name)
+		assert.False(t, already, direction.name)
+		assert.ErrorIs(t, err, fs.ErrNotExist, direction.name)
+	}
+}

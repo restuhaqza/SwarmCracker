@@ -64,6 +64,11 @@ const (
 	ScopeSandboxesRead  Scope = "sandboxes:read"
 	ScopeSandboxesWrite Scope = "sandboxes:write"
 	ScopeSandboxesExec  Scope = "sandboxes:exec"
+	// ScopeSandboxesCheckpoints may take a checkpoint of a sandbox, read the node's
+	// checkpoints, fork from one and forget one. It is the checkpoint half of the
+	// sandbox surface and it is operator-level like sandboxes:write: a checkpoint
+	// writes a gigabyte of images to the node's disk, and a fork starts a VM.
+	ScopeSandboxesCheckpoints Scope = "sandboxes:checkpoints"
 	// ScopeSandboxesToken may mint a token scoped to one sandbox. It is admin-only
 	// because issuing a credential is administrative work: a sandbox-scoped token
 	// carries read and exec for its sandbox and nothing else, and a holder of one
@@ -93,7 +98,7 @@ var runnerScopes = concatScopes(readerScopes,
 var operatorScopes = concatScopes(runnerScopes,
 	ScopeServicesWrite, ScopeNetworksWrite, ScopeConfigsWrite,
 	ScopeConfigsReadValues, ScopeSecretsWrite,
-	ScopeSandboxesWrite)
+	ScopeSandboxesWrite, ScopeSandboxesCheckpoints)
 
 var adminScopes = concatScopes(operatorScopes,
 	ScopeNodesWrite, ScopeTokensAdmin, ScopeAuditRead, ScopeSandboxesToken,

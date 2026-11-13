@@ -39,6 +39,83 @@ type fakeSandboxes struct {
 	// execStatus, when set, is a status the exec handler writes itself instead of a
 	// stream: the command never ran, and the route must report it as that.
 	execStatus int
+
+	// checkpoints is the node's checkpoint set, and forkReq what a fork was asked for.
+	checkpoints   map[string]sandbox.CheckpointRecord
+	checkpointErr error
+	// checkpointListErr is a checkpoint store that cannot be listed at all, which is a
+	// different answer from a store with nothing in it.
+	checkpointListErr error
+	forkReq           sandbox.ForkRequest
+	forkErr           error
+	forkFromID        string
+}
+
+func (f *fakeSandboxes) Checkpoint(_ context.Context, id, name string) (sandbox.CheckpointRecord, error) {
+	if f.checkpointErr != nil {
+		return sandbox.CheckpointRecord{}, f.checkpointErr
+	}
+	rec := sandbox.CheckpointRecord{Name: name, Sandbox: id, Template: "base@1", Quiesce: sandbox.QuiesceOutcome{Mode: "fsfreeze", Mounts: []string{"/"}}}
+	if f.checkpoints == nil {
+		f.checkpoints = map[string]sandbox.CheckpointRecord{}
+	}
+	f.checkpoints[name] = rec
+	return rec, nil
+}
+
+func (f *fakeSandboxes) Checkpoints(sandboxID string) ([]sandbox.CheckpointRecord, []string, error) {
+	if f.checkpointListErr != nil {
+		return nil, nil, f.checkpointListErr
+	}
+	out := make([]sandbox.CheckpointRecord, 0, len(f.checkpoints))
+	for _, rec := range f.checkpoints {
+		if sandboxID == "" || rec.Sandbox == sandboxID {
+			out = append(out, rec)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, f.skipped, nil
+}
+
+func (f *fakeSandboxes) CheckpointByName(name string) (sandbox.CheckpointRecord, error) {
+	rec, ok := f.checkpoints[name]
+	if !ok {
+		return sandbox.CheckpointRecord{}, sandbox.ErrNotFound
+	}
+	return rec, nil
+}
+
+func (f *fakeSandboxes) DeleteCheckpoint(_ context.Context, name string) (sandbox.CheckpointDeletion, error) {
+	if _, ok := f.checkpoints[name]; !ok {
+		return sandbox.CheckpointDeletion{}, sandbox.ErrNotFound
+	}
+	delete(f.checkpoints, name)
+	return sandbox.CheckpointDeletion{
+		Name: name, StateBytes: 1024, DiskBytes: 2048, ChunkBytes: 4096, Chunks: 1,
+		FreedBytes: 7168, RetainedBytes: 8192, Retained: 1,
+	}, nil
+}
+
+func (f *fakeSandboxes) Fork(_ context.Context, req sandbox.ForkRequest) ([]sandbox.Record, error) {
+	f.forkReq = req
+	if f.forkErr != nil {
+		return nil, f.forkErr
+	}
+	count := req.Count
+	if count == 0 {
+		count = 1
+	}
+	out := make([]sandbox.Record, 0, count)
+	for i := 0; i < count; i++ {
+		out = append(out, sandbox.Record{ID: fmt.Sprintf("clone-%d", i), State: sandbox.StateReady, ForkedFrom: req.Checkpoint})
+	}
+	return out, nil
+}
+
+func (f *fakeSandboxes) ForkFromSandbox(_ context.Context, id string, req sandbox.ForkRequest) ([]sandbox.Record, error) {
+	f.forkFromID = id
+	req.Checkpoint = "fresh"
+	return f.Fork(context.Background(), req)
 }
 
 func (f *fakeSandboxes) List() ([]sandbox.Record, []string, error) {
@@ -662,4 +739,378 @@ func TestCreateSandboxTokenRefusesASandboxThatIsNotThere(t *testing.T) {
 	rec := sandboxRequest(t, srv, admin, http.MethodPost, "/v1/sandboxes/missing/tokens", `{}`)
 	require.Equal(t, http.StatusNotFound, rec.Code, rec.Body.String())
 	assert.Equal(t, string(output.CodeNotFound), decodeErrorBody(t, rec).Error.Code)
+}
+
+// TestCheckpointRoutesRequireTheirScope pins the scope the four node-scoped routes and the
+// four sandbox-scoped ones name: a token without sandboxes:checkpoints is refused with the
+// reason and the scope it lacked, on list and delete too — reading or freeing a
+// checkpoint is checkpoint authority, not sandbox-read authority.
+func TestCheckpointRoutesRequireTheirScope(t *testing.T) {
+	boxes := &fakeSandboxes{records: map[string]sandbox.Record{
+		"a": {ID: "a", State: sandbox.StateReady},
+	}, checkpoints: map[string]sandbox.CheckpointRecord{
+		"c1": {Name: "c1", Sandbox: "a"},
+	}}
+	srv, store := sandboxServer(t, boxes)
+
+	routes := []struct{ method, path, body string }{
+		{http.MethodPost, "/v1/sandboxes/a/checkpoints", `{"name":"c1"}`},
+		{http.MethodGet, "/v1/sandboxes/a/checkpoints", ""},
+		{http.MethodPost, "/v1/sandboxes/a/checkpoints/c1/restore", `{}`},
+		{http.MethodPost, "/v1/sandboxes/a/fork", `{"count":1}`},
+		{http.MethodGet, "/v1/checkpoints", ""},
+		{http.MethodGet, "/v1/checkpoints/c1", ""},
+		{http.MethodPost, "/v1/checkpoints/c1/fork", `{"count":1}`},
+		{http.MethodDelete, "/v1/checkpoints/c1", ""},
+	}
+	for _, route := range routes {
+		t.Run(route.method+" "+route.path, func(t *testing.T) {
+			narrow, _, err := store.CreateWithOptions("narrow", RoleRunner, TokenOptions{
+				Scopes:        []string{string(ScopeTasksExec)},
+				TaskSelectors: &TaskSelectors{TaskIDs: []string{"t1"}},
+			})
+			require.NoError(t, err)
+
+			rec := sandboxRequest(t, srv, narrow, route.method, route.path, route.body)
+			require.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
+			doc := decodeErrorBody(t, rec)
+			assert.Equal(t, "scope_missing", doc.Error.Details["reason"])
+			assert.Equal(t, string(ScopeSandboxesCheckpoints), doc.Error.Details["requiredScope"])
+		})
+	}
+}
+
+// TestCheckpointRoutesAnswerAcrossSandboxes pins the ownership rule: a checkpoint named
+// under a sandbox that does not own it is 404, not a clone of someone else's image and not
+// a 403 that would confirm the name exists.
+func TestCheckpointRoutesAnswerAcrossSandboxes(t *testing.T) {
+	boxes := &fakeSandboxes{
+		records: map[string]sandbox.Record{
+			"a": {ID: "a", State: sandbox.StateReady},
+			"b": {ID: "b", State: sandbox.StateReady},
+		},
+		checkpoints: map[string]sandbox.CheckpointRecord{"c1": {Name: "c1", Sandbox: "a"}},
+	}
+	srv, store := sandboxServer(t, boxes)
+	admin, _, err := store.Create("admin", RoleAdmin)
+	require.NoError(t, err)
+
+	rec := sandboxRequest(t, srv, admin, http.MethodPost, "/v1/sandboxes/b/checkpoints/c1/restore", `{}`)
+	require.Equal(t, http.StatusNotFound, rec.Code, rec.Body.String())
+	assert.Empty(t, boxes.forkReq.Checkpoint, "no clone is made from another sandbox's checkpoint")
+}
+
+// TestSandboxCheckpointListingIsSandboxScoped pins the route a caller reaches a
+// checkpoint through while its sandbox still exists: the listing is that sandbox's, a
+// record that cannot be read is a warning beside the ones that could, and a store that
+// cannot be read at all is an error rather than an empty list.
+func TestSandboxCheckpointListingIsSandboxScoped(t *testing.T) {
+	boxes := &fakeSandboxes{
+		records: map[string]sandbox.Record{"a": {ID: "a", State: sandbox.StateReady}},
+		checkpoints: map[string]sandbox.CheckpointRecord{
+			"c1": {Name: "c1", Sandbox: "a", Template: "base@1",
+				Quiesce: sandbox.QuiesceOutcome{Mode: "fsfreeze", Mounts: []string{"/"}}},
+			"c2": {Name: "c2", Sandbox: "b"},
+		},
+		skipped: []string{"/var/lib/firecracker/checkpoints/broken/checkpoint.json"},
+	}
+	srv, store := sandboxServer(t, boxes)
+	admin, _, err := store.Create("admin", RoleAdmin)
+	require.NoError(t, err)
+
+	rec := sandboxRequest(t, srv, admin, http.MethodGet, "/v1/sandboxes/a/checkpoints", "")
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	var list v1.CheckpointList
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &list))
+	require.Len(t, list.Items, 1, "the sandbox-scoped listing is that sandbox's checkpoints")
+	assert.Equal(t, "c1", list.Items[0].Name)
+	assert.Equal(t, []string{"/"}, list.Items[0].QuiesceMounts,
+		"the mounts the guest froze travel with the listing")
+
+	require.Len(t, list.Warnings, 1, "one unreadable record does not hide the others")
+	assert.Equal(t, "checkpoint_record_unreadable", list.Warnings[0].Code)
+	assert.Equal(t, "checkpoint.json", list.Warnings[0].Details["file"],
+		"the warning names the file an operator has to look at, not its whole path")
+
+	// A store that cannot be read is not a sandbox with no checkpoints: an error the
+	// handler cannot classify is reported as a store that may answer again.
+	boxes.checkpointListErr = errors.New("the checkpoint store is unavailable")
+	rec = sandboxRequest(t, srv, admin, http.MethodGet, "/v1/sandboxes/a/checkpoints", "")
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code, rec.Body.String())
+	var failure v1.ErrorDocument
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &failure))
+	assert.Equal(t, string(output.CodeUnreachable), failure.Error.Code)
+}
+
+// TestCheckpointRoutesMapWhatTheStoreRefuses pins the code each refusal becomes, over both
+// families of route: what a caller acts on is the status, so a node that serves no
+// checkpoints, an image this node does not have, and a sandbox that is not ready must not
+// arrive as one internal error.
+func TestCheckpointRoutesMapWhatTheStoreRefuses(t *testing.T) {
+	boxes := &fakeSandboxes{
+		records:     map[string]sandbox.Record{"a": {ID: "a", State: sandbox.StateReady}},
+		checkpoints: map[string]sandbox.CheckpointRecord{"c1": {Name: "c1", Sandbox: "a"}},
+	}
+	srv, store := sandboxServer(t, boxes)
+	admin, _, err := store.Create("admin", RoleAdmin)
+	require.NoError(t, err)
+
+	// No checkpoint store on this node: a capability it does not serve, said so.
+	boxes.checkpointListErr = sandbox.ErrNotImplemented
+	rec := sandboxRequest(t, srv, admin, http.MethodGet, "/v1/checkpoints", "")
+	require.Equal(t, http.StatusNotImplemented, rec.Code, rec.Body.String())
+	boxes.checkpointListErr = nil
+
+	// A name this node does not have is a 404 on both of the routes that take one.
+	rec = sandboxRequest(t, srv, admin, http.MethodPost, "/v1/checkpoints/absent/fork", `{}`)
+	require.Equal(t, http.StatusNotFound, rec.Code, rec.Body.String())
+
+	rec = sandboxRequest(t, srv, admin, http.MethodDelete, "/v1/checkpoints/absent", "")
+	require.Equal(t, http.StatusNotFound, rec.Code, rec.Body.String())
+	var doc v1.ErrorDocument
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &doc))
+	assert.Equal(t, string(output.CodeNotFound), doc.Error.Code)
+
+	// A sandbox that cannot be checkpointed yet is a conflict: the request was well
+	// formed and the same one will work once the guest is up.
+	boxes.checkpointErr = sandbox.ErrNotReady
+	rec = sandboxRequest(t, srv, admin, http.MethodPost, "/v1/sandboxes/a/checkpoints", `{"name":"c2"}`)
+	require.Equal(t, http.StatusConflict, rec.Code, rec.Body.String())
+	boxes.checkpointErr = nil
+
+	// And the image that is there is still readable, so the refusals above changed
+	// nothing.
+	rec = sandboxRequest(t, srv, admin, http.MethodGet, "/v1/checkpoints/c1", "")
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+}
+
+// TestCheckpointRoutesServeTheImage pins the four node-scoped routes end to end: take a
+// checkpoint of a sandbox, read it, fork from it by name (the sandbox it came from need not
+// exist), and forget it.
+func TestCheckpointRoutesServeTheImage(t *testing.T) {
+	boxes := &fakeSandboxes{records: map[string]sandbox.Record{
+		"a": {ID: "a", State: sandbox.StateReady},
+	}}
+	srv, store := sandboxServer(t, boxes)
+	admin, _, err := store.Create("admin", RoleAdmin)
+	require.NoError(t, err)
+
+	rec := sandboxRequest(t, srv, admin, http.MethodPost, "/v1/sandboxes/a/checkpoints", `{"name":"c1"}`)
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+	var taken v1.CheckpointDocument
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &taken))
+	assert.Equal(t, "c1", taken.Name)
+	assert.Equal(t, "a", taken.Sandbox)
+	assert.Equal(t, "fsfreeze", taken.QuiesceMode, "the guest's own report travels with the document")
+
+	rec = sandboxRequest(t, srv, admin, http.MethodGet, "/v1/checkpoints", "")
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	var list v1.CheckpointList
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &list))
+	require.Len(t, list.Items, 1)
+
+	rec = sandboxRequest(t, srv, admin, http.MethodGet, "/v1/checkpoints/c1", "")
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	// The parent is gone: a checkpoint is an image, and the node-scoped fork still works.
+	delete(boxes.records, "a")
+	rec = sandboxRequest(t, srv, admin, http.MethodPost, "/v1/checkpoints/c1/fork", `{"count":2}`)
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+	var forks v1.SandboxList
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &forks))
+	assert.Len(t, forks.Items, 2)
+	assert.Equal(t, "c1", boxes.forkReq.Checkpoint)
+	assert.Equal(t, "c1", forks.Checkpoint, "a fork's answer names the image it left behind")
+
+	rec = sandboxRequest(t, srv, admin, http.MethodDelete, "/v1/checkpoints/c1", "")
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	var removal v1.CheckpointRemoval
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &removal))
+	assert.Equal(t, "c1", removal.Checkpoint)
+	assert.Equal(t, int64(7168), removal.Freed.FreedBytes, "a delete says what the node got back")
+	assert.Equal(t, int64(8192), removal.Freed.RetainedBytes, "and what stayed, because another image shares its chunks")
+
+	rec = sandboxRequest(t, srv, admin, http.MethodGet, "/v1/checkpoints/c1", "")
+	require.Equal(t, http.StatusNotFound, rec.Code, rec.Body.String())
+}
+
+// TestSandboxForkTakesTheCheckpointItWasNotGiven pins the sandbox-scoped fork: the route
+// checkpoints what the sandbox is running now, so a caller that wants clones of the present
+// does not have to name an image first.
+func TestSandboxForkTakesTheCheckpointItWasNotGiven(t *testing.T) {
+	boxes := &fakeSandboxes{records: map[string]sandbox.Record{
+		"a": {ID: "a", State: sandbox.StateReady},
+	}}
+	srv, store := sandboxServer(t, boxes)
+	admin, _, err := store.Create("admin", RoleAdmin)
+	require.NoError(t, err)
+
+	rec := sandboxRequest(t, srv, admin, http.MethodPost, "/v1/sandboxes/a/fork", `{"count":1}`)
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+	assert.Equal(t, "a", boxes.forkFromID)
+
+	// The checkpoint this route took is named in the answer, and it is a checkpoint of the
+	// node: a caller that cannot find it cannot free the image the fork left behind.
+	var doc v1.SandboxList
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &doc))
+	assert.Equal(t, "fresh", doc.Checkpoint)
+	rec = sandboxRequest(t, srv, admin, http.MethodGet, "/v1/checkpoints", "")
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+}
+
+// TestCheckpointRoutesAnswerNotImplementedWithoutAManager pins the capability gate on the
+// node-scoped routes too: a node that runs no sandboxes says so rather than answering an
+// empty list that looks like "no checkpoints".
+func TestCheckpointRoutesAnswerNotImplementedWithoutAManager(t *testing.T) {
+	srv, store := sandboxServer(t, nil)
+	admin, _, err := store.Create("admin", RoleAdmin)
+	require.NoError(t, err)
+
+	for _, path := range []string{"/v1/checkpoints", "/v1/checkpoints/c1"} {
+		rec := sandboxRequest(t, srv, admin, http.MethodGet, path, "")
+		require.Equal(t, http.StatusNotImplemented, rec.Code, path)
+		assert.Equal(t, "sandboxes", decodeErrorBody(t, rec).Error.Details["capability"])
+	}
+}
+
+// TestCheckpointRoutesSayWhenTheNodeServesNone pins the refusal a node configured without
+// checkpoints gives: a 501 that names the capability and the reason, not an internal error
+// that reads as a broken store.
+func TestCheckpointRoutesSayWhenTheNodeServesNone(t *testing.T) {
+	boxes := &fakeSandboxes{records: map[string]sandbox.Record{"a": {ID: "a", State: sandbox.StateReady}}}
+	boxes.checkpointErr = sandbox.ErrNotImplemented
+	srv, store := sandboxServer(t, boxes)
+	admin, _, err := store.Create("admin", RoleAdmin)
+	require.NoError(t, err)
+
+	rec := sandboxRequest(t, srv, admin, http.MethodPost, "/v1/sandboxes/a/checkpoints", `{"name":"c1"}`)
+	require.Equal(t, http.StatusNotImplemented, rec.Code, rec.Body.String())
+	doc := decodeErrorBody(t, rec)
+	assert.Equal(t, "checkpoints_unavailable", doc.Error.Details["reason"])
+	assert.Equal(t, "sandboxes:checkpoints", doc.Error.Details["capability"])
+}
+
+// TestForkRoutesRefuseWhatTheyCannotDo pins the refusals the three fork routes share, since
+// they share the mapping: a body that is not a fork, a TTL that is not one of the three
+// values the contract allows, and a node that cannot fork at all. What a caller acts on is
+// the status, so none of them may arrive as an internal error.
+func TestForkRoutesRefuseWhatTheyCannotDo(t *testing.T) {
+	boxes := &fakeSandboxes{
+		records:     map[string]sandbox.Record{"a": {ID: "a", State: sandbox.StateReady}},
+		checkpoints: map[string]sandbox.CheckpointRecord{"c1": {Name: "c1", Sandbox: "a"}},
+	}
+	srv, store := sandboxServer(t, boxes)
+	admin, _, err := store.Create("admin", RoleAdmin)
+	require.NoError(t, err)
+
+	for _, path := range []string{"/v1/sandboxes/a/fork", "/v1/checkpoints/c1/fork"} {
+		rec := sandboxRequest(t, srv, admin, http.MethodPost, path, `{"count":"two"}`)
+		require.GreaterOrEqual(t, rec.Code, 400, path)
+		assert.NotEqual(t, http.StatusCreated, rec.Code, path)
+
+		// A TTL that is neither the node's default, never, nor a positive one.
+		rec = sandboxRequest(t, srv, admin, http.MethodPost, path, `{"idleTtlSeconds":-5}`)
+		require.Equal(t, http.StatusBadRequest, rec.Code, path+": "+rec.Body.String())
+		var doc v1.ErrorDocument
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &doc))
+		assert.Equal(t, "invalid_ttl", doc.Error.Details["reason"])
+	}
+
+	// A node that cannot fork says why, and makes no clone.
+	boxes.forkErr = sandbox.ErrNotReady
+	rec := sandboxRequest(t, srv, admin, http.MethodPost, "/v1/sandboxes/a/fork", `{}`)
+	require.Equal(t, http.StatusConflict, rec.Code, rec.Body.String())
+	boxes.forkErr = nil
+
+	// The node-scoped route answers the same way for the same cause.
+	boxes.forkErr = sandbox.ErrNotReady
+	rec = sandboxRequest(t, srv, admin, http.MethodPost, "/v1/checkpoints/c1/fork", `{}`)
+	require.Equal(t, http.StatusConflict, rec.Code, rec.Body.String())
+}
+
+// TestRestoreCheckpointRefusesWhatItCannotRestore pins the two refusals the restore route
+// makes on its own: an image this node does not have, and a fork that could not be made.
+func TestRestoreCheckpointRefusesWhatItCannotRestore(t *testing.T) {
+	boxes := &fakeSandboxes{
+		records:     map[string]sandbox.Record{"a": {ID: "a", State: sandbox.StateReady}},
+		checkpoints: map[string]sandbox.CheckpointRecord{"c1": {Name: "c1", Sandbox: "a"}},
+	}
+	srv, store := sandboxServer(t, boxes)
+	admin, _, err := store.Create("admin", RoleAdmin)
+	require.NoError(t, err)
+
+	rec := sandboxRequest(t, srv, admin, http.MethodPost, "/v1/sandboxes/a/checkpoints/absent/restore", `{}`)
+	require.Equal(t, http.StatusNotFound, rec.Code, rec.Body.String())
+
+	boxes.forkErr = sandbox.ErrNotReady
+	rec = sandboxRequest(t, srv, admin, http.MethodPost, "/v1/sandboxes/a/checkpoints/c1/restore", `{}`)
+	require.Equal(t, http.StatusConflict, rec.Code, rec.Body.String())
+	boxes.forkErr = nil
+
+	// And the route resumes one clone — never more, whatever the body asked for.
+	rec = sandboxRequest(t, srv, admin, http.MethodPost, "/v1/sandboxes/a/checkpoints/c1/restore", `{"count":9}`)
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+	var list v1.SandboxList
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &list))
+	assert.Len(t, list.Items, 1, "a restore is one clone of one image")
+	assert.Equal(t, "c1", list.Checkpoint)
+}
+
+// TestCreateSandboxCheckpointRefusesABodyItCannotRead pins the body rule: a name is a
+// string, and a create that cannot read its document does not take an image.
+func TestCreateSandboxCheckpointRefusesABodyItCannotRead(t *testing.T) {
+	boxes := &fakeSandboxes{records: map[string]sandbox.Record{"a": {ID: "a", State: sandbox.StateReady}}}
+	srv, store := sandboxServer(t, boxes)
+	admin, _, err := store.Create("admin", RoleAdmin)
+	require.NoError(t, err)
+
+	rec := sandboxRequest(t, srv, admin, http.MethodPost, "/v1/sandboxes/a/checkpoints", `{"name":123}`)
+	require.GreaterOrEqual(t, rec.Code, 400, rec.Body.String())
+	assert.NotEqual(t, http.StatusCreated, rec.Code)
+	assert.Empty(t, boxes.checkpoints, "a refused body takes no image")
+}
+
+// TestSandboxAPIErrorPassesThroughWhatCarriesACode pins the two ends of the mapping: a nil
+// failure is nil, and a failure that already carries a code keeps it rather than being
+// flattened into an internal error.
+func TestSandboxAPIErrorPassesThroughWhatCarriesACode(t *testing.T) {
+	assert.Nil(t, sandboxAPIError(nil))
+
+	typed := output.NewError(output.CodeTimeout, "the guest did not answer in time")
+	assert.Same(t, typed, sandboxAPIError(typed))
+}
+
+// TestTheTokenStoreThatIsNotThereIsACapabilityThisNodeLacks pins the refusal a node without
+// a token store gives: a capability it does not serve, named, rather than a token minted
+// nowhere or an internal error.
+func TestTheTokenStoreThatIsNotThereIsACapabilityThisNodeLacks(t *testing.T) {
+	boxes := &fakeSandboxes{records: map[string]sandbox.Record{"a": {ID: "a", State: sandbox.StateReady}}}
+	srv, store := sandboxServer(t, boxes)
+	admin, _, err := store.Create("admin", RoleAdmin)
+	require.NoError(t, err)
+	srv.cfg.Tokens = nil
+
+	// The token store is also what authenticates, so a node without one refuses at the
+	// door rather than inside the handler: the capability it lacks is reachable no other
+	// way, which is why the check inside the handler is a guard and not a route.
+	rec := sandboxRequest(t, srv, admin, http.MethodPost, "/v1/sandboxes/a/tokens", `{"name":"t"}`)
+	require.Equal(t, http.StatusUnauthorized, rec.Code, rec.Body.String())
+	var doc v1.ErrorDocument
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &doc))
+	assert.Equal(t, string(output.CodeUnauthenticated), doc.Error.Code)
+}
+
+// TestCheckpointCreateRefusesADocumentItCannotParse pins the body rule at the point a
+// checkpoint would be taken: a body that is not a document is refused before the guest is
+// frozen, so a caller's typo does not cost the sandbox a pause.
+func TestCheckpointCreateRefusesADocumentItCannotParse(t *testing.T) {
+	boxes := &fakeSandboxes{records: map[string]sandbox.Record{"a": {ID: "a", State: sandbox.StateReady}}}
+	srv, store := sandboxServer(t, boxes)
+	admin, _, err := store.Create("admin", RoleAdmin)
+	require.NoError(t, err)
+
+	rec := sandboxRequest(t, srv, admin, http.MethodPost, "/v1/sandboxes/a/checkpoints", `{"name":`)
+	require.GreaterOrEqual(t, rec.Code, 400, rec.Body.String())
+	assert.NotEqual(t, http.StatusCreated, rec.Code)
+	assert.Empty(t, boxes.checkpoints, "no image is taken for a body that cannot be read")
 }

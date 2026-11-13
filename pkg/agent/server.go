@@ -189,24 +189,54 @@ func (s *server) dispatch(req *Request) error {
 	done := s.tracker.begin(req.Op)
 	defer done()
 
+	return s.serve(req)
+}
+
+// serve hands one admitted request to the handler for its operation.
+//
+// The operations are grouped by the plane D9 gives them: the session operations reach
+// a caller's files and processes, and the machine operations describe or change the
+// guest itself. The split is not cosmetic — it is the division the guest's privilege
+// model is written in — and it keeps one function from growing a branch per operation
+// for as long as the protocol is extended.
+func (s *server) serve(req *Request) error {
 	switch req.Op {
-	case CapHello:
-		return s.handleHello(req)
 	case CapExec:
-		if err := s.handleExec(req); err != nil {
-			return err
-		}
-		if req.TTY {
-			// A TTY session shares the raw byte stream with framed requests,
-			// so the framed protocol cannot continue. handleExec has already
-			// sent the exit frame; end the connection.
-			return errEndConn
-		}
-		return nil
+		return s.serveExec(req)
 	case CapPut:
 		return s.handlePut(req)
 	case CapGet:
 		return s.handleGet(req)
+	case CapStat:
+		return s.handleStat(req)
+	case CapList:
+		return s.handleList(req)
+	case CapTar:
+		return s.handleTar(req)
+	default:
+		return s.serveMachine(req)
+	}
+}
+
+// serveExec runs one command. A TTY session shares the raw byte stream with framed
+// requests, so the framed protocol cannot continue after it: handleExec has already
+// sent the exit frame, and the connection ends here.
+func (s *server) serveExec(req *Request) error {
+	if err := s.handleExec(req); err != nil {
+		return err
+	}
+	if req.TTY {
+		return errEndConn
+	}
+	return nil
+}
+
+// serveMachine is the machine plane: the guest's own identity, resources and state,
+// which only root inside the guest can observe or change.
+func (s *server) serveMachine(req *Request) error {
+	switch req.Op {
+	case CapHello:
+		return s.handleHello(req)
 	case CapMetrics:
 		return s.handleMetrics()
 	case CapPrepare:
@@ -215,14 +245,10 @@ func (s *server) dispatch(req *Request) error {
 		return s.handleInfo()
 	case CapNet:
 		return s.handleNet()
-	case CapStat:
-		return s.handleStat(req)
-	case CapList:
-		return s.handleList(req)
-	case CapTar:
-		return s.handleTar(req)
 	case CapActivity:
 		return s.handleActivity()
+	case CapQuiesce:
+		return s.handleQuiesce(req)
 	default:
 		// Unreachable through the gate above; kept so an op added to this
 		// switch without being advertised is still refused, not attempted.
@@ -274,6 +300,21 @@ func (s *server) handleMetrics() error {
 	return s.write(Message{Type: "metrics", Metrics: &m})
 }
 
+// handleQuiesce stops or releases the guest's writers, and replies with what it did.
+//
+// A failure is typed and fatal to the checkpoint the caller is taking: an image
+// captured while the guest was still writing is a pair of images that disagree, and a
+// caller that treated this as a warning would store it as if it were consistent.
+func (s *server) handleQuiesce(req *Request) error {
+	report, err := quiesceGuest(s.reqCtx, req.Quiesce)
+	if err != nil {
+		// The op is not repeated here: the client prefixes it, and "quiesce:
+		// quiesce: ..." reads like a bug in the thing being reported.
+		return s.writeFailure(CodeQuiesceFailed, "%v", err)
+	}
+	return s.write(Message{Type: "quiesced", ID: req.ID, Quiesced: &report})
+}
+
 // handlePrepare runs the post-restore hook and replies with what the guest
 // carries afterwards (prepare.go).
 //
@@ -283,6 +324,20 @@ func (s *server) handleMetrics() error {
 // needed". The guest keeps serving the connection, so the caller learns what went
 // wrong before it tears the instance down.
 func (s *server) handlePrepare() error {
+	// A resumed guest may still have its filesystems frozen: the freeze lives in the
+	// superblock, so the memory image carries it, and the first writer in a clone is
+	// this hook. Release it before anything writes — including this agent's own log and
+	// the token, machine-id, host keys and clock the hook applies — and fail here,
+	// naming the mount, rather than hanging on an unrelated write a moment later.
+	//
+	// Only a guest that advertises quiesce is asked: one that does not cannot have been
+	// frozen by it, and an older agent must still restore.
+	if slices.Contains(s.caps, CapQuiesce) {
+		if _, err := thawAll(s.reqCtx); err != nil {
+			return s.writeFailure(CodePrepareFailed,
+				"release the freeze this image was captured with: %v", err)
+		}
+	}
 	report, err := prepareGuest(s.reqCtx)
 	if err != nil {
 		// The op is not repeated here: the client prefixes it, and "prepare: prepare:

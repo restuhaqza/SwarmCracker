@@ -379,6 +379,26 @@ func (s *Server) routes() {
 	s.handleRoutes("/v1/sandboxes/{id}/tokens",
 		write(http.MethodPost, ScopeSandboxesToken, s.createSandboxToken))
 
+	// Checkpoints: the sandbox-scoped routes the RFC states, and the node-scoped ones a
+	// checkpoint needs to be reachable once its sandbox is gone (a checkpoint outlives
+	// it by design, and `keepCheckpoint=true` on a delete would otherwise leave images
+	// nothing could list, fork or free). A checkpoint's name is unique on the node.
+	s.handleRoutes("/v1/sandboxes/{id}/checkpoints",
+		write(http.MethodPost, ScopeSandboxesCheckpoints, s.createSandboxCheckpoint),
+		read(ScopeSandboxesCheckpoints, s.listSandboxCheckpoints),
+	)
+	s.handleRoutes("/v1/sandboxes/{id}/checkpoints/{name}/restore",
+		write(http.MethodPost, ScopeSandboxesCheckpoints, s.restoreCheckpoint))
+	s.handleRoutes("/v1/sandboxes/{id}/fork",
+		write(http.MethodPost, ScopeSandboxesCheckpoints, s.forkSandbox))
+	s.handleRoutes("/v1/checkpoints",
+		read(ScopeSandboxesCheckpoints, s.listCheckpoints))
+	s.handleRoutes("/v1/checkpoints/{name}",
+		read(ScopeSandboxesCheckpoints, s.getCheckpoint),
+		write(http.MethodDelete, ScopeSandboxesCheckpoints, s.deleteCheckpoint))
+	s.handleRoutes("/v1/checkpoints/{name}/fork",
+		write(http.MethodPost, ScopeSandboxesCheckpoints, s.forkFromCheckpoint))
+
 	s.handleRoutes("/v1/nodes",
 		accepts(read(ScopeNodesRead, s.listNodes), "limit", "cursor", "label"),
 	)

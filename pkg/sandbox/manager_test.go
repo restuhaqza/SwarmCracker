@@ -35,6 +35,9 @@ type fakeLauncher struct {
 	requests []snapshot.LaunchRequest
 	launched snapshot.Launched
 	jailRoot string
+	// vsockDir, when set, gives every launch its own muxer path: <dir>/<instance>.vsock.
+	// A launch whose muxer is one fixed path would make two clones write one token file.
+	vsockDir string
 	err      error
 	// onStart runs inside Start, before the launch is answered. A test uses it to
 	// look at the world at the moment the VM is asked to start, which is the moment
@@ -50,7 +53,11 @@ func (f *fakeLauncher) Start(_ context.Context, req snapshot.LaunchRequest) (sna
 	if f.err != nil {
 		return snapshot.Launched{}, f.err
 	}
-	return f.launched, nil
+	launched := f.launched
+	if f.vsockDir != "" {
+		launched.VsockPath = filepath.Join(f.vsockDir, req.InstanceID+".vsock")
+	}
+	return launched, nil
 }
 
 func (f *fakeLauncher) JailRoot(id string) string {
@@ -215,6 +222,7 @@ func newFixture(t *testing.T) *fixture {
 			Hello:     agent.Hello{AgentVersion: "test-agent", BootID: "boot-test"},
 		},
 		jailRoot: filepath.Join(tmp, "jailer"),
+		vsockDir: filepath.Join(tmp, "run"),
 	}
 
 	manager, err := New(Config{
@@ -290,7 +298,11 @@ func TestCreateBuildsTheSandboxInTheOrderItPromises(t *testing.T) {
 	assert.Equal(t, "sandbox-sbx-1", req.Identity.Hostname)
 	assert.Equal(t, "10.63.0.2/30", req.Identity.Address)
 	assert.Equal(t, "10.63.0.1", req.Identity.Gateway)
-	assert.Equal(t, req.AgentToken, req.Identity.Token)
+	// This guest's credential was written into its disk before it booted, so the identity
+	// carries none: `prepare` applies an identity by difference, and asking it to adopt a
+	// token the guest already holds is a launch that fails the "did it adopt it" check.
+	assert.Empty(t, req.Identity.Token)
+	assert.NotEmpty(t, req.AgentToken, "the launch still proves the guest's readiness with it")
 	assert.NotEmpty(t, req.Identity.MachineID, "two clones must never share a machine id")
 	assert.NotEmpty(t, req.Identity.Entropy, "a restored guest's entropy pool is a copy")
 
@@ -900,6 +912,8 @@ func TestCreateFailsWhenItCannotPublishTheCredential(t *testing.T) {
 
 	blocked := filepath.Join(t.TempDir(), "not-a-directory")
 	require.NoError(t, os.WriteFile(blocked, []byte("x"), 0o600))
+	// This launch names its own muxer: the fixture would otherwise derive one per instance.
+	f.launcher.vsockDir = ""
 	f.launcher.launched.VsockPath = filepath.Join(blocked, "sbx.vsock")
 
 	rec, err := f.manager.Create(context.Background(), CreateRequest{Template: "base", ID: "sbx-1"})

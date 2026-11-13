@@ -41,13 +41,12 @@ import (
 	"github.com/urfave/cli/v2"
 
 	"github.com/restuhaqza/swarmcracker/pkg/apihttp"
+	"github.com/restuhaqza/swarmcracker/pkg/checkpoint"
 	"github.com/restuhaqza/swarmcracker/pkg/client"
 	"github.com/restuhaqza/swarmcracker/pkg/config"
-	"github.com/restuhaqza/swarmcracker/pkg/jailer"
 	"github.com/restuhaqza/swarmcracker/pkg/sandbox"
-	"github.com/restuhaqza/swarmcracker/pkg/sandbox/netpolicy"
+	"github.com/restuhaqza/swarmcracker/pkg/sandboxd"
 	"github.com/restuhaqza/swarmcracker/pkg/snapshot"
-	"github.com/restuhaqza/swarmcracker/pkg/vminstance"
 )
 
 // Version is set by the build (-X main.Version=...).
@@ -115,7 +114,7 @@ func appFlags() []cli.Flag {
 		&cli.DurationFlag{Name: "reap-interval", Value: defaultReapEvery, Usage: "How often idle sandboxes are looked for"},
 		&cli.DurationFlag{Name: "default-ttl", Value: 0, Usage: "Idle TTL applied to a sandbox created without one (0 = never reap)"},
 		&cli.DurationFlag{Name: "ready-timeout", Value: defaultReadyWindow, Usage: "How long a sandbox's boot may take to reach the guest agent's hello"},
-		&cli.StringFlag{Name: "log-level", Value: "info", Usage: "Log level (debug, info, warn, error)"},
+		&cli.BoolFlag{Name: "no-checkpoints", Usage: "Serve no sandbox checkpoints: the checkpoint routes then answer 501 checkpoints_unavailable"},
 	}
 }
 
@@ -201,28 +200,12 @@ func run(ctx *cli.Context) error {
 	}
 }
 
-// build opens everything a sandbox needs on this node and returns the manager and the
-// token store the API authenticates against.
+// build maps this command's flags onto the node's sandbox wiring and calls it.
+//
+// The wiring itself lives in pkg/sandboxd because a host test has to be able to
+// build the same manager the daemon builds, from values it names itself; what
+// stays here is the part only this command has, which is reading flags.
 func build(ctx *cli.Context) (*sandbox.Manager, *apihttp.TokenStore, error) {
-	stateDir := ctx.String("state-dir")
-
-	store, err := sandbox.NewStore(sandbox.StoreConfig{Dir: sandbox.Dir(stateDir)})
-	if err != nil {
-		return nil, nil, err
-	}
-	instances, err := vminstance.NewStore(vminstance.Config{Dir: vminstance.Dir(stateDir)})
-	if err != nil {
-		return nil, nil, err
-	}
-
-	// The network policy is what makes a sandbox isolated rather than merely a VM: its
-	// own namespace, the fixed tap0 in it, its own /30 and a default-deny table. It
-	// refuses to build without iproute2 and nftables, which is the point.
-	network, err := netpolicy.New(netpolicy.Config{})
-	if err != nil {
-		return nil, nil, err
-	}
-
 	first, err := positiveFlag(ctx, "jailer-uid-first", defaultUIDFirst)
 	if err != nil {
 		return nil, nil, err
@@ -231,58 +214,69 @@ func build(ctx *cli.Context) (*sandbox.Manager, *apihttp.TokenStore, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	uids, err := jailer.NewUIDAllocator(first, size)
+
+	checkpoints, blobs, snapshots, err := checkpointStores(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	// The cgroup the jailer builds for an instance is what makes the VMM's own
-	// resource use visible and bounded, and it is the fifth thing a teardown frees.
-	// The jailer creates it only when it is given a limit to apply, so the pids limit
-	// is what makes a sandbox have a cgroup at all; memory.max is left unset by
-	// default because one value would have to cover every sandbox size, and a limit
-	// below a guest's own memory is an OOM kill rather than a guard.
-	launcher := snapshot.JailedLauncher{
-		ChrootBaseDir:  ctx.String("jailer-chroot-dir"),
-		JailerPath:     ctx.String("jailer-path"),
-		ParentCgroup:   ctx.String("parent-cgroup"),
-		LogDir:         ctx.String("log-dir"),
-		UIDs:           uids,
-		Registry:       instances,
-		ReadyTimeout:   ctx.Duration("ready-timeout"),
-		PidsMax:        ctx.Int("vmm-pids-max"),
-		MemoryMaxBytes: int64(ctx.Int("vmm-memory-max")) << 20,
-	}
+	return sandboxd.New(sandboxd.Config{
+		StateDir:        ctx.String("state-dir"),
+		GoldenDir:       ctx.String("golden-dir"),
+		KernelPath:      ctx.String("kernel-path"),
+		KernelProfiles:  kernelProfiles(ctx),
+		RootfsDir:       ctx.String("rootfs-dir"),
+		LogDir:          ctx.String("log-dir"),
+		JailerPath:      ctx.String("jailer-path"),
+		JailerChrootDir: ctx.String("jailer-chroot-dir"),
+		JailerUIDFirst:  first,
+		JailerUIDSize:   size,
+		ParentCgroup:    ctx.String("parent-cgroup"),
+		VMMPidsMax:      ctx.Int("vmm-pids-max"),
+		VMMMemoryMaxMB:  ctx.Int("vmm-memory-max"),
+		VCPUs:           ctx.Int("vcpus"),
+		MemoryMB:        ctx.Int("memory"),
+		DefaultTTL:      ctx.Duration("default-ttl"),
+		ReadyTimeout:    ctx.Duration("ready-timeout"),
+		TokenFile:       tokenFile(ctx),
 
-	tokens, err := apihttp.OpenTokenStore(tokenFile(ctx))
+		// A checkpoint is three stores working together: its record, the chunk store its
+		// memory image lives in, and the snapshot manager that takes the images. They are
+		// built together or not at all, and pkg/sandboxd refuses a node that has some of
+		// them.
+		Checkpoints:     checkpoints,
+		CheckpointBlobs: blobs,
+		Snapshots:       snapshots,
+	})
+}
+
+// checkpointStores builds the three stores a checkpoint needs, or none of them when the
+// node was started with --no-checkpoints: a node either takes checkpoints or says it does
+// not, and the routes for it answer 501 checkpoints_unavailable.
+func checkpointStores(ctx *cli.Context) (*sandbox.CheckpointStore, checkpoint.Store, sandbox.Snapshotter, error) {
+	if ctx.Bool("no-checkpoints") {
+		return nil, nil, nil, nil
+	}
+	stateDir := ctx.String("state-dir")
+
+	records, err := sandbox.NewCheckpointStore(filepath.Join(stateDir, sandbox.DirNameCheckpoints))
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-
-	manager, err := sandbox.New(sandbox.Config{
-		Store:          store,
-		GoldenDir:      ctx.String("golden-dir"),
-		KernelPath:     ctx.String("kernel-path"),
-		KernelProfiles: kernelProfiles(ctx),
-		RootfsDir:      ctx.String("rootfs-dir"),
-		LogDir:         ctx.String("log-dir"),
-		Launcher:       launcher,
-		Network:        network,
-		Instances:      instances,
-		ParentCgroup:   ctx.String("parent-cgroup"),
-		VCPUs:          ctx.Int("vcpus"),
-		MemoryMB:       ctx.Int("memory"),
-		DefaultTTL:     ctx.Duration("default-ttl"),
-		// Removing a sandbox removes the credentials scoped to it: a token that
-		// outlived its sandbox would be a key to a guest that no longer exists.
-		RevokeTokens: func(_ context.Context, id string) (int, error) {
-			return tokens.RevokeSandbox(id)
-		},
+	blobs, err := checkpoint.NewLocal(checkpoint.LocalConfig{Root: checkpoint.Dir(stateDir)})
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	// The snapshot manager's directory is its working copy: a checkpoint moves the images
+	// it keeps out of it and publishes its record last, so this holds what a create is
+	// using rather than what a fork resumes.
+	snapshots, err := snapshot.NewManager(snapshot.SnapshotConfig{
+		SnapshotDir: filepath.Join(stateDir, "snapshot-work"),
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return manager, tokens, nil
+	return records, blobs, snapshots, nil
 }
 
 // positiveFlag parses a numeric flag whose zero means "not set".

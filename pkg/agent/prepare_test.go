@@ -17,13 +17,24 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// installPrepareSeams replaces the three seams `prepare` is built from — reaching
+// installPrepareSeams replaces the seams `prepare` is built from — reaching
 // the metadata service, reading the identity from it, and applying it — so the
 // contract around them can be tested without a guest to reconfigure or a
 // Firecracker metadata service to talk to. It returns what the applier was asked
 // to apply.
+//
+// The hook also releases the freeze a resumed image carries before it applies
+// anything (thawAll), so the quiesce seams are installed too. They exist for the
+// same reason: a unit test cannot freeze the filesystem it is running on. Without
+// them these tests would take the host's own mount table to the real FIFREEZE
+// ioctls, where they need CAP_SYS_ADMIN and fail with EPERM on an unprivileged
+// runner — a statement about the machine, not about the hook.
 func installPrepareSeams(t *testing.T, id Identity, fetchErr, applyErr error) *[]Identity {
 	t.Helper()
+
+	// The same fixture and seams the quiesce tests use: one writable ext4 root on
+	// /dev/vda, which is the shape of a sandbox's guest.
+	withQuiesceSeams(t, ext4Mounts, nil)
 
 	previousReach := reachMetadataService
 	previousFetch := fetchIdentity
@@ -768,4 +779,28 @@ func TestGenerationIDIsTheMachinesIdentity(t *testing.T) {
 	same.Routes = nil
 	assert.Equal(t, base.GenerationID(), same.GenerationID(),
 		"the same machine is the same machine")
+}
+
+// TestAFailedReleaseFailsThePrepareBeforeItWrites pins the hook's own failure: a resumed
+// guest whose filesystems will not be released is refused here, naming the operation, rather
+// than hanging on the first write the hook makes — and nothing of the identity is applied,
+// because an instance whose writers are blocked is not one that was prepared.
+func TestAFailedReleaseFailsThePrepareBeforeItWrites(t *testing.T) {
+	applied := installPrepareSeams(t, helloIdentity(), nil, nil)
+
+	// The guest cannot release the mount its image was frozen on.
+	frozenErr := errors.New("quiesce /: ioctl: operation not permitted")
+	original := thawFilesystem
+	thawFilesystem = func(string) (bool, error) { return false, frozenErr }
+	t.Cleanup(func() { thawFilesystem = original })
+
+	conn, _ := newPipePair(t)
+	require.NoError(t, WriteFrame(conn, Request{Op: CapPrepare, ID: "7"}))
+
+	msg := readMessage(t, conn)
+	require.Equal(t, "error", msg.Type)
+	assert.Equal(t, CodePrepareFailed, msg.ErrorCode)
+	assert.Contains(t, msg.Error, "release the freeze")
+	assert.Contains(t, msg.Error, "/")
+	assert.Empty(t, *applied, "a hook that could not release the freeze applies nothing")
 }

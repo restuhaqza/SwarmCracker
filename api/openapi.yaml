@@ -2697,6 +2697,342 @@ paths:
           content:
             application/vnd.swarmcracker.v1+json:
               schema: { $ref: "#/components/schemas/ErrorDocument" }
+  /v1/sandboxes/{id}/checkpoints:
+    post:
+      operationId: createSandboxCheckpoint
+      summary: Take a consistent checkpoint of one sandbox
+      description: >
+        Requires sandboxes:checkpoints and a sandbox selector that names this sandbox.
+        The node freezes the guest's writers first (the agent's quiesce op: sync, then
+        the freeze ioctl on every writable filesystem backed by a block device), takes
+        the memory image, the state document and a copy of the disk while nothing can
+        write, releases the guest, and publishes the checkpoint under the body's name.
+        201 only once the images are stored. A guest that cannot be frozen fails the
+        checkpoint: an image whose consistency is unknown is not stored. Names are unique
+        on the node, so an existing one is 409. The guest's credential travels with the
+        checkpoint (a resumed guest still requires it) and never crosses this API.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: The sandbox to checkpoint. It must be ready.
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/vnd.swarmcracker.v1+json:
+            schema: { $ref: "#/components/schemas/CheckpointCreate" }
+      responses:
+        "201":
+          description: The checkpoint, published
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+            Idempotency-Replayed: { $ref: "#/components/headers/Idempotency-Replayed" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/CheckpointDocument" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+        "4XX":
+          description: Typed failure
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
+    get:
+      operationId: listSandboxCheckpoints
+      summary: List one sandbox's checkpoints
+      description: >
+        Requires sandboxes:checkpoints. A checkpoint record that cannot be read is a
+        warnings[] entry (code "checkpoint_record_unreadable") and does not fail the
+        listing.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: This sandbox's checkpoints
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/CheckpointList" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+        "4XX":
+          description: Typed failure
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
+
+  /v1/sandboxes/{id}/checkpoints/{name}/restore:
+    post:
+      operationId: restoreCheckpoint
+      summary: Fork one clone from a checkpoint of this sandbox
+      description: >
+        Requires sandboxes:checkpoints and a sandbox selector that names the sandbox in
+        the path. A checkpoint whose record names another sandbox is 404: the resource
+        the caller asked about is not this sandbox's, and a 403 would confirm the name
+        exists. The sandbox itself need not still exist — a checkpoint is an image — but
+        the path still names its parent. Returns one clone, as a SandboxDocument.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: The sandbox the checkpoint was taken from.
+        - name: name
+          in: path
+          required: true
+          schema: { type: string }
+          description: The checkpoint's node-unique name.
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: false
+        content:
+          application/vnd.swarmcracker.v1+json:
+            schema: { $ref: "#/components/schemas/SandboxFork" }
+      responses:
+        "201":
+          description: The clone, ready
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+            Idempotency-Replayed: { $ref: "#/components/headers/Idempotency-Replayed" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/SandboxDocument" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+        "4XX":
+          description: Typed failure
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
+
+  /v1/sandboxes/{id}/fork:
+    post:
+      operationId: forkSandbox
+      summary: Fork clones of what a sandbox is running now
+      description: >
+        Requires sandboxes:checkpoints and a sandbox selector that names this sandbox.
+        The node takes a fresh checkpoint of the running sandbox (the same quiesce,
+        snapshot and publication a named checkpoint takes) under a minted name, forks the
+        requested clones from it, and returns them. The checkpoint is not deleted: the
+        response carries its name in checkpoint, and it is listed by GET /v1/checkpoints,
+        because an image a caller cannot find is one it cannot free.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: false
+        content:
+          application/vnd.swarmcracker.v1+json:
+            schema: { $ref: "#/components/schemas/SandboxFork" }
+      responses:
+        "201":
+          description: The clones, with the checkpoint they came from
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+            Idempotency-Replayed: { $ref: "#/components/headers/Idempotency-Replayed" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/SandboxList" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+        "4XX":
+          description: Typed failure
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
+
+  /v1/checkpoints:
+    get:
+      operationId: listCheckpoints
+      summary: List every checkpoint on this node
+      description: >
+        Requires sandboxes:checkpoints. This is the node-scoped view a checkpoint needs:
+        it outlives the sandbox it was taken from, so a checkpoint whose sandbox is gone
+        would otherwise be listed nowhere. A record that cannot be read is a warnings[]
+        entry and does not fail the listing.
+      responses:
+        "200":
+          description: This node's checkpoints
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/CheckpointList" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+        "4XX":
+          description: Typed failure
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
+
+  /v1/checkpoints/{name}:
+    get:
+      operationId: getCheckpoint
+      summary: Read one checkpoint
+      description: Requires sandboxes:checkpoints. A name this node does not have is 404.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The checkpoint
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/CheckpointDocument" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+        "4XX":
+          description: Typed failure
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
+    delete:
+      operationId: deleteCheckpoint
+      summary: Forget a checkpoint
+      description: >
+        Requires sandboxes:checkpoints. Removes the checkpoint's record, its state
+        document and its disk copy, and reclaims the memory-image chunks no other
+        checkpoint references: chunks are shared, so deleting one of two forks frees
+        megabytes rather than the image. The response says both numbers — freedBytes and
+        retainedBytes — so an operator is never left believing the disk came back when it
+        is still referenced.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: What forgetting it freed, and what stayed referenced
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/CheckpointRemoval" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+        "4XX":
+          description: Typed failure
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
+
+  /v1/checkpoints/{name}/fork:
+    post:
+      operationId: forkFromCheckpoint
+      summary: Fork clones from a checkpoint by its name
+      description: >
+        Requires sandboxes:checkpoints. The sandbox the checkpoint came from need not
+        exist: a checkpoint is an image, and this is the route that reaches one without
+        it. The clones get their own namespace, address, MAC, disk and per-boot identity;
+        the checkpoint itself is only read.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string }
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: false
+        content:
+          application/vnd.swarmcracker.v1+json:
+            schema: { $ref: "#/components/schemas/SandboxFork" }
+      responses:
+        "201":
+          description: The clones, with the checkpoint they came from
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+            Idempotency-Replayed: { $ref: "#/components/headers/Idempotency-Replayed" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/SandboxList" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+        "4XX":
+          description: Typed failure
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
+
   /v1/nodes:
     get:
       operationId: listNodes
@@ -4466,6 +4802,13 @@ components:
         warnings:
           type: array
           items: { $ref: "#/components/schemas/Warning" }
+        checkpoint:
+          type: string
+          description: >
+            The checkpoint these sandboxes were forked from. Set by the fork routes,
+            which either take a checkpoint themselves (and mint its name) or are given
+            one: a caller that cannot see the name cannot free the image the fork left
+            behind.
 
     SandboxDocument:
       allOf:
@@ -4541,6 +4884,128 @@ components:
           type: string
           format: date-time
           description: An RFC3339 instant; absent means the token never expires.
+
+
+    Checkpoint:
+      type: object
+      required: [name, sandbox]
+      properties:
+        name:
+          type: string
+          description: The checkpoint's identity, unique on the node.
+        sandbox:
+          type: string
+          description: The sandbox it was taken from, which need not still exist.
+        template: { type: string }
+        kernel: { type: string }
+        createdAt: { type: string, format: date-time }
+        vcpus: { type: integer }
+        memoryMB: { type: integer }
+        egress:
+          type: array
+          items: { type: string }
+          description: The allowlist a fork of this checkpoint installs.
+        quiesceMode:
+          type: string
+          description: >
+            The mechanism the guest used to stop its writers before the images were
+            taken. Empty means it was checkpointed without one, so its consistency is
+            unknown.
+        quiesceMounts:
+          type: array
+          items: { type: string }
+          description: >
+            The filesystems the guest froze. Only writable filesystems backed by a block
+            device are covered (a sandbox's root, and a workspace if it is one); tmpfs,
+            /dev/shm and an overlay's upper layer are not.
+        sizeBytes: { type: integer, format: int64 }
+        agentVersion: { type: string }
+        bootId: { type: string }
+
+    CheckpointDocument:
+      allOf:
+        - $ref: "#/components/schemas/Checkpoint"
+        - type: object
+          required: [schemaVersion, kind]
+          properties:
+            schemaVersion: { type: integer, enum: [1] }
+            kind: { type: string, enum: [Checkpoint] }
+
+    CheckpointList:
+      type: object
+      required: [schemaVersion, kind, items, next]
+      properties:
+        schemaVersion: { type: integer, enum: [1] }
+        kind: { type: string, enum: [CheckpointList] }
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/Checkpoint" }
+        next:
+          type: [string, "null"]
+        warnings:
+          type: array
+          items: { $ref: "#/components/schemas/Warning" }
+
+    CheckpointCreate:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          description: >
+            The checkpoint's identity, one safe path element, unique on the node. A
+            checkpoint is named so it can be forked and freed later; an existing name is
+            409.
+
+    SandboxFork:
+      type: object
+      properties:
+        count:
+          type: integer
+          minimum: 1
+          description: How many clones to create. Absent means one.
+        owner: { type: string, description: The clones' owner; empty inherits the checkpoint's. }
+        idleTtlSeconds:
+          type: integer
+          description: >
+            The clones' idle TTL in seconds: zero is the node's default, -1 means never
+            reap them, and any other negative value is 400 "invalid_ttl".
+        ids:
+          type: array
+          items: { type: string }
+          description: >
+            The clones' identities, in order. Empty mints them and the response carries
+            them; a list of a different length than count is 400.
+
+    CheckpointRemoval:
+      type: object
+      required: [schemaVersion, kind, checkpoint, freed]
+      properties:
+        schemaVersion: { type: integer, enum: [1] }
+        kind: { type: string, enum: [CheckpointRemoval] }
+        checkpoint: { type: string }
+        freed: { $ref: "#/components/schemas/CheckpointFreed" }
+
+    CheckpointFreed:
+      type: object
+      required: [freedBytes, retainedBytes]
+      properties:
+        stateBytes: { type: integer, format: int64, description: The checkpoint's state document. }
+        diskBytes: { type: integer, format: int64, description: The checkpoint's own disk copy. }
+        chunkBytes: { type: integer, format: int64, description: The memory-image chunks nothing else referenced. }
+        chunks: { type: integer, description: How many chunks those were. }
+        freedBytes:
+          type: integer
+          format: int64
+          description: What the node actually got back.
+        retainedBytes:
+          type: integer
+          format: int64
+          description: >
+            The memory image the remaining checkpoints still reference. Shared chunks are
+            counted once per referencing checkpoint, so this is what they reference rather
+            than a deduplicated disk figure.
+        retained: { type: integer, description: How many checkpoints remain. }
 
     SandboxToken:
       type: object

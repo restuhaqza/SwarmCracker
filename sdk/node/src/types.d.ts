@@ -33,6 +33,87 @@ export interface AuditResource {
   name?: string;
 }
 
+export interface Checkpoint {
+  /** The checkpoint's identity, unique on the node. */
+  name: string;
+  /** The sandbox it was taken from, which need not still exist. */
+  sandbox: string;
+  template?: string;
+  kernel?: string;
+  createdAt?: string;
+  vcpus?: number;
+  memoryMB?: number;
+  /** The allowlist a fork of this checkpoint installs. */
+  egress?: string[];
+  /** The mechanism the guest used to stop its writers before the images were taken. Empty means it was checkpointed without one, so its consistency is unknown. */
+  quiesceMode?: string;
+  /** The filesystems the guest froze. Only writable filesystems backed by a block device are covered (a sandbox's root, and a workspace if it is one); tmpfs, /dev/shm and an overlay's upper layer are not. */
+  quiesceMounts?: string[];
+  sizeBytes?: number;
+  agentVersion?: string;
+  bootId?: string;
+}
+
+export interface CheckpointCreate {
+  /** The checkpoint's identity, one safe path element, unique on the node. A checkpoint is named so it can be forked and freed later; an existing name is 409. */
+  name: string;
+}
+
+export interface CheckpointDocument {
+  /** The checkpoint's identity, unique on the node. */
+  name: string;
+  /** The sandbox it was taken from, which need not still exist. */
+  sandbox: string;
+  template?: string;
+  kernel?: string;
+  createdAt?: string;
+  vcpus?: number;
+  memoryMB?: number;
+  /** The allowlist a fork of this checkpoint installs. */
+  egress?: string[];
+  /** The mechanism the guest used to stop its writers before the images were taken. Empty means it was checkpointed without one, so its consistency is unknown. */
+  quiesceMode?: string;
+  /** The filesystems the guest froze. Only writable filesystems backed by a block device are covered (a sandbox's root, and a workspace if it is one); tmpfs, /dev/shm and an overlay's upper layer are not. */
+  quiesceMounts?: string[];
+  sizeBytes?: number;
+  agentVersion?: string;
+  bootId?: string;
+  schemaVersion: 1;
+  kind: "Checkpoint";
+}
+
+export interface CheckpointFreed {
+  /** The checkpoint's state document. */
+  stateBytes?: number;
+  /** The checkpoint's own disk copy. */
+  diskBytes?: number;
+  /** The memory-image chunks nothing else referenced. */
+  chunkBytes?: number;
+  /** How many chunks those were. */
+  chunks?: number;
+  /** What the node actually got back. */
+  freedBytes: number;
+  /** The memory image the remaining checkpoints still reference. Shared chunks are counted once per referencing checkpoint, so this is what they reference rather than a deduplicated disk figure. */
+  retainedBytes: number;
+  /** How many checkpoints remain. */
+  retained?: number;
+}
+
+export interface CheckpointList {
+  schemaVersion: 1;
+  kind: "CheckpointList";
+  items: Checkpoint[];
+  next: string | null;
+  warnings?: Warning[];
+}
+
+export interface CheckpointRemoval {
+  schemaVersion: 1;
+  kind: "CheckpointRemoval";
+  checkpoint: string;
+  freed: CheckpointFreed;
+}
+
 export interface Config {
   id: string;
   name: string;
@@ -428,6 +509,17 @@ export interface SandboxDocument {
   kind: "Sandbox";
 }
 
+export interface SandboxFork {
+  /** How many clones to create. Absent means one. */
+  count?: number;
+  /** The clones' owner; empty inherits the checkpoint's. */
+  owner?: string;
+  /** The clones' idle TTL in seconds: zero is the node's default, -1 means never reap them, and any other negative value is 400 "invalid_ttl". */
+  idleTtlSeconds?: number;
+  /** The clones' identities, in order. Empty mints them and the response carries them; a list of a different length than count is 400. */
+  ids?: string[];
+}
+
 /** What removing one sandbox took back, resource by resource, so "everything is gone" is a list rather than a promise. */
 export interface SandboxFreed {
   processStopped?: boolean;
@@ -449,6 +541,8 @@ export interface SandboxList {
   items: Sandbox[];
   next: string | null;
   warnings?: Warning[];
+  /** The checkpoint these sandboxes were forked from. Set by the fork routes, which either take a checkpoint themselves (and mint its name) or are given one: a caller that cannot see the name cannot free the image the fork left behind. */
+  checkpoint?: string;
 }
 
 export interface SandboxRemoval {
