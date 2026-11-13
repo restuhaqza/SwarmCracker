@@ -73,9 +73,14 @@ type SandboxList struct {
 	SchemaVersion int       `json:"schemaVersion"`
 	Kind          string    `json:"kind"`
 	Items         []Sandbox `json:"items"`
-	Next          *string   `json:"next"`
-	Warnings      []Warning `json:"warnings,omitempty"`
-	Partial       []Partial `json:"partial,omitempty"`
+	// Checkpoint names the checkpoint the sandboxes in this list were forked from. It
+	// is set by the fork routes, which either take a checkpoint themselves (and mint
+	// its name) or are given one: a caller that cannot see the name cannot free the
+	// image the fork left behind.
+	Checkpoint string    `json:"checkpoint,omitempty"`
+	Next       *string   `json:"next"`
+	Warnings   []Warning `json:"warnings,omitempty"`
+	Partial    []Partial `json:"partial,omitempty"`
 }
 
 // NewSandboxList returns a list document with a non-nil items array.

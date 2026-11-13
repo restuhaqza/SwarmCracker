@@ -102,15 +102,47 @@ type SandboxFork struct {
 	IDs []string `json:"ids,omitempty"`
 }
 
-// CheckpointRemoval is the response to DELETE /v1/checkpoints/{name}: the checkpoint
-// that was forgotten.
+// CheckpointRemoval is the response to DELETE /v1/checkpoints/{name}: the checkpoint that
+// was forgotten and what forgetting it actually freed.
 type CheckpointRemoval struct {
-	SchemaVersion int    `json:"schemaVersion"`
-	Kind          string `json:"kind"`
-	Checkpoint    string `json:"checkpoint"`
+	SchemaVersion int             `json:"schemaVersion"`
+	Kind          string          `json:"kind"`
+	Checkpoint    string          `json:"checkpoint"`
+	Freed         CheckpointFreed `json:"freed"`
+}
+
+// CheckpointFreed says what a deletion returned to the node and what it had to keep.
+//
+// The distinction is the point: a checkpoint's memory image is stored as 4 MiB chunks
+// shared with every other checkpoint of the same sandbox, so deleting one of two forks
+// frees a few megabytes rather than the image — and a response that reported only success
+// would leave an operator believing the disk came back.
+type CheckpointFreed struct {
+	// StateBytes and DiskBytes are the checkpoint's own files.
+	StateBytes int64 `json:"stateBytes,omitempty"`
+	DiskBytes  int64 `json:"diskBytes,omitempty"`
+	// ChunkBytes and Chunks are the memory-image chunks nothing else referenced.
+	ChunkBytes int64 `json:"chunkBytes,omitempty"`
+	Chunks     int   `json:"chunks,omitempty"`
+	// FreedBytes is what the node got back.
+	FreedBytes int64 `json:"freedBytes"`
+	// RetainedBytes is the memory image the remaining checkpoints still reference, and
+	// Retained is how many remain. Shared chunks are counted once per referencing
+	// checkpoint, so RetainedBytes is what they reference rather than a deduplicated
+	// figure.
+	RetainedBytes int64 `json:"retainedBytes"`
+	Retained      int   `json:"retained,omitempty"`
 }
 
 // NewCheckpointRemoval wraps a removal in the v1 envelope.
 func NewCheckpointRemoval(name string) CheckpointRemoval {
-	return CheckpointRemoval{SchemaVersion: SchemaVersion, Kind: KindCheckpointRemoval, Checkpoint: name}
+	return NewCheckpointRemovalWithFreed(name, CheckpointFreed{})
+}
+
+// NewCheckpointRemovalWithFreed wraps a removal and its freed/retained figures.
+func NewCheckpointRemovalWithFreed(name string, freed CheckpointFreed) CheckpointRemoval {
+	return CheckpointRemoval{
+		SchemaVersion: SchemaVersion, Kind: KindCheckpointRemoval,
+		Checkpoint: name, Freed: freed,
+	}
 }

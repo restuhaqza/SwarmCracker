@@ -268,21 +268,120 @@ func (m *Manager) CheckpointByName(name string) (CheckpointRecord, error) {
 	return m.checkpoint(name)
 }
 
-// DeleteCheckpoint forgets one checkpoint: its record, its state document and its disk
-// copy.
+// CheckpointDeletion is what forgetting a checkpoint freed, and what it had to keep
+// because other checkpoints still reference it.
 //
-// The memory image's chunks are not deleted here, and that is deliberate: a chunk is
-// shared between checkpoints — two forks of one sandbox share almost every chunk — so no
-// single checkpoint may free one. pkg/checkpoint's Prune reclaims the chunks nothing
-// references any more, by age.
-func (m *Manager) DeleteCheckpoint(name string) error {
+// A caller is told both numbers rather than a bare "deleted": a checkpoint's memory image
+// is shared chunk by chunk with every other checkpoint of the same sandbox, so freeing one
+// does not return its size to the node, and a response that did not say so would leave an
+// operator believing a gigabyte came back when a few kilobytes did.
+type CheckpointDeletion struct {
+	// Name is the checkpoint that was forgotten.
+	Name string
+	// StateBytes and DiskBytes are the checkpoint's own files: its state document and
+	// its disk copy, which nothing else references.
+	StateBytes int64
+	DiskBytes  int64
+	// ChunkBytes and Chunks are the memory image's chunks this deletion removed, because
+	// no remaining checkpoint named them.
+	ChunkBytes int64
+	Chunks     int
+	// FreedBytes is what the node actually got back.
+	FreedBytes int64
+	// RetainedBytes is the memory image the remaining checkpoints still reference, and
+	// Retained is how many checkpoints remain. The figure is the sum of their manifests'
+	// sizes, so it counts a chunk two checkpoints share twice: it is what they reference,
+	// not a deduplicated disk figure.
+	RetainedBytes int64
+	Retained      int
+}
+
+// DeleteCheckpoint forgets one checkpoint: its record, its state document, its disk copy,
+// its manifest, and the memory-image chunks nothing else references.
+//
+// # Why the chunks are reclaimed here and not by a sweep alone
+//
+// A chunk is shared: two checkpoints of one sandbox are almost the same 4 MiB chunks, and
+// an image is hundreds of megabytes. So no checkpoint may free a chunk another one names,
+// and a delete that only removed its own record would leave the node holding the whole
+// memory image with nothing that could name it — the leak this call exists to prevent. It
+// therefore marks by what remains: it removes the manifest first, then asks the store to
+// reclaim the chunks no manifest references any more (pkg/checkpoint's Prune, with no
+// minimum age: a chunk that is unreferenced after this deletion is unreferenced).
+//
+// A checkpoint is taken and forked under the manager's one-at-a-time slot, so holding it
+// here is what keeps a reclaim from racing a checkpoint whose chunks are written but not
+// yet named by a manifest.
+func (m *Manager) DeleteCheckpoint(ctx context.Context, name string) (CheckpointDeletion, error) {
+	m.slots <- struct{}{}
+	defer func() { <-m.slots }()
+
 	if m.cfg.Checkpoints == nil {
-		return fmt.Errorf("%w: this node keeps no sandbox checkpoints", ErrNotImplemented)
+		return CheckpointDeletion{}, fmt.Errorf("%w: this node keeps no sandbox checkpoints", ErrNotImplemented)
 	}
-	if _, err := m.checkpoint(name); err != nil {
-		return err
+	rec, err := m.checkpoint(name)
+	if err != nil {
+		return CheckpointDeletion{}, err
 	}
-	return m.cfg.Checkpoints.Delete(name)
+
+	released := CheckpointDeletion{Name: name}
+	for _, file := range []struct {
+		path string
+		into *int64
+	}{{rec.State, &released.StateBytes}, {rec.Disk, &released.DiskBytes}} {
+		if info, err := os.Stat(file.path); err == nil {
+			*file.into = info.Size()
+		}
+	}
+
+	// The record goes first: a checkpoint that is half-forgotten (files gone, record
+	// there) must not be one a fork can find, and the record is what a fork resolves.
+	if err := m.cfg.Checkpoints.Delete(name); err != nil {
+		return CheckpointDeletion{}, err
+	}
+	if err := m.cfg.CheckpointBlobs.Delete(ctx, name); err != nil {
+		return released, fmt.Errorf("checkpoint %q: forget its manifest: %w", name, err)
+	}
+
+	// Reclaim what that left behind. A chunk another checkpoint names is kept, which is
+	// what makes deleting one of two forks cheap rather than destructive.
+	if report, err := m.cfg.CheckpointBlobs.Prune(ctx, 0); err != nil {
+		return released, fmt.Errorf("checkpoint %q: reclaim the chunks it left: %w", name, err)
+	} else {
+		released.ChunkBytes, released.Chunks = report.Bytes, report.Blobs
+	}
+
+	released.Retained, released.RetainedBytes, err = m.retainedImages(ctx)
+	if err != nil {
+		return released, err
+	}
+	released.FreedBytes = released.StateBytes + released.DiskBytes + released.ChunkBytes
+	log.Info().
+		Str("checkpoint", name).
+		Str("sandbox_id", rec.Sandbox).
+		Int64("freed_bytes", released.FreedBytes).
+		Int64("retained_bytes", released.RetainedBytes).
+		Int("retained", released.Retained).
+		Msg("Sandbox checkpoint is forgotten")
+	return released, nil
+}
+
+// retainedImages reports how many checkpoints remain and how much memory image they
+// reference, so a delete can say what it did not free.
+func (m *Manager) retainedImages(ctx context.Context) (int, int64, error) {
+	ids, err := m.cfg.CheckpointBlobs.List(ctx)
+	if err != nil {
+		return 0, 0, fmt.Errorf("list the checkpoints whose images remain: %w", err)
+	}
+	var total int64
+	for _, id := range ids {
+		manifest, err := m.cfg.CheckpointBlobs.Manifest(ctx, id)
+		if err != nil {
+			return len(ids), total, fmt.Errorf("read the manifest of %s: %w", id, err)
+		}
+		total += manifest.TotalSize
+	}
+	return len(ids), total, nil
 }
 
 // ForkRequest is what a caller asks for: the checkpoint to fork, and how many.

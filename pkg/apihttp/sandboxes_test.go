@@ -79,12 +79,15 @@ func (f *fakeSandboxes) CheckpointByName(name string) (sandbox.CheckpointRecord,
 	return rec, nil
 }
 
-func (f *fakeSandboxes) DeleteCheckpoint(name string) error {
+func (f *fakeSandboxes) DeleteCheckpoint(_ context.Context, name string) (sandbox.CheckpointDeletion, error) {
 	if _, ok := f.checkpoints[name]; !ok {
-		return sandbox.ErrNotFound
+		return sandbox.CheckpointDeletion{}, sandbox.ErrNotFound
 	}
 	delete(f.checkpoints, name)
-	return nil
+	return sandbox.CheckpointDeletion{
+		Name: name, StateBytes: 1024, DiskBytes: 2048, ChunkBytes: 4096, Chunks: 1,
+		FreedBytes: 7168, RetainedBytes: 8192, Retained: 1,
+	}, nil
 }
 
 func (f *fakeSandboxes) Fork(_ context.Context, req sandbox.ForkRequest) ([]sandbox.Record, error) {
@@ -827,12 +830,15 @@ func TestCheckpointRoutesServeTheImage(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &forks))
 	assert.Len(t, forks.Items, 2)
 	assert.Equal(t, "c1", boxes.forkReq.Checkpoint)
+	assert.Equal(t, "c1", forks.Checkpoint, "a fork's answer names the image it left behind")
 
 	rec = sandboxRequest(t, srv, admin, http.MethodDelete, "/v1/checkpoints/c1", "")
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 	var removal v1.CheckpointRemoval
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &removal))
 	assert.Equal(t, "c1", removal.Checkpoint)
+	assert.Equal(t, int64(7168), removal.Freed.FreedBytes, "a delete says what the node got back")
+	assert.Equal(t, int64(8192), removal.Freed.RetainedBytes, "and what stayed, because another image shares its chunks")
 
 	rec = sandboxRequest(t, srv, admin, http.MethodGet, "/v1/checkpoints/c1", "")
 	require.Equal(t, http.StatusNotFound, rec.Code, rec.Body.String())
@@ -852,6 +858,14 @@ func TestSandboxForkTakesTheCheckpointItWasNotGiven(t *testing.T) {
 	rec := sandboxRequest(t, srv, admin, http.MethodPost, "/v1/sandboxes/a/fork", `{"count":1}`)
 	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
 	assert.Equal(t, "a", boxes.forkFromID)
+
+	// The checkpoint this route took is named in the answer, and it is a checkpoint of the
+	// node: a caller that cannot find it cannot free the image the fork left behind.
+	var doc v1.SandboxList
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &doc))
+	assert.Equal(t, "fresh", doc.Checkpoint)
+	rec = sandboxRequest(t, srv, admin, http.MethodGet, "/v1/checkpoints", "")
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 }
 
 // TestCheckpointRoutesAnswerNotImplementedWithoutAManager pins the capability gate on the

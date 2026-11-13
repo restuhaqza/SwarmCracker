@@ -57,8 +57,9 @@ type Sandboxes interface {
 	Checkpoints(sandboxID string) ([]sandbox.CheckpointRecord, []string, error)
 	// CheckpointByName returns one checkpoint by its node-unique name.
 	CheckpointByName(name string) (sandbox.CheckpointRecord, error)
-	// DeleteCheckpoint forgets one checkpoint and the images it owns.
-	DeleteCheckpoint(name string) error
+	// DeleteCheckpoint forgets one checkpoint, and reports what that freed and what
+	// the node had to keep.
+	DeleteCheckpoint(ctx context.Context, name string) (sandbox.CheckpointDeletion, error)
 	// Fork creates clones from a checkpoint.
 	Fork(ctx context.Context, req sandbox.ForkRequest) ([]sandbox.Record, error)
 	// ForkFromSandbox takes a fresh checkpoint of a running sandbox and forks it.
@@ -506,12 +507,21 @@ func (s *Server) deleteCheckpoint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := r.PathValue("name")
-	if err := s.cfg.Sandboxes.DeleteCheckpoint(name); err != nil {
+	released, err := s.cfg.Sandboxes.DeleteCheckpoint(r.Context(), name)
+	if err != nil {
 		s.writeError(w, r, sandboxAPIError(err))
 		return
 	}
 	s.recordSandboxAudit(r, "checkpoint.delete", name, "ok")
-	s.writeJSON(w, r, http.StatusOK, v1.NewCheckpointRemoval(name))
+	s.writeJSON(w, r, http.StatusOK, v1.NewCheckpointRemovalWithFreed(name, v1.CheckpointFreed{
+		StateBytes:    released.StateBytes,
+		DiskBytes:     released.DiskBytes,
+		ChunkBytes:    released.ChunkBytes,
+		Chunks:        released.Chunks,
+		FreedBytes:    released.FreedBytes,
+		RetainedBytes: released.RetainedBytes,
+		Retained:      released.Retained,
+	}))
 }
 
 // createSandboxCheckpoint serves POST /v1/sandboxes/{id}/checkpoints.
@@ -639,5 +649,11 @@ func (s *Server) fork(w http.ResponseWriter, r *http.Request, run func(sandbox.F
 	for _, rec := range forks {
 		items = append(items, sandboxDocument(rec))
 	}
-	s.writeJSON(w, r, http.StatusCreated, v1.NewSandboxList(items))
+	doc := v1.NewSandboxList(items)
+	// A fork's checkpoint is part of its answer: the fork routes take (or name) an image,
+	// and a caller that cannot see which one it left behind cannot free it.
+	if len(forks) != 0 {
+		doc.Checkpoint = forks[0].ForkedFrom
+	}
+	s.writeJSON(w, r, http.StatusCreated, doc)
 }

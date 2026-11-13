@@ -470,3 +470,96 @@ func TestCheckpointStoreRoundTripAndRules(t *testing.T) {
 	_, statErr := os.Stat(store.Path("c1"))
 	assert.True(t, os.IsNotExist(statErr))
 }
+
+// chunkFiles counts the memory-image chunks a node is holding: the shard directories the
+// local store keeps them in, one file per chunk.
+func chunkFiles(t *testing.T, root string) int {
+	t.Helper()
+
+	count := 0
+	entries, err := os.ReadDir(root)
+	require.NoError(t, err)
+	for _, entry := range entries {
+		if !entry.IsDir() || len(entry.Name()) != 2 {
+			continue
+		}
+		shard, err := os.ReadDir(filepath.Join(root, entry.Name()))
+		require.NoError(t, err)
+		count += len(shard)
+	}
+	return count
+}
+
+// TestDeletingACheckpointFreesOnlyWhatNothingElseUses is the rule that keeps a shared
+// memory image from being a leak or a corruption: two checkpoints of one sandbox are almost
+// the same chunks, so deleting one frees its own files and no chunk the other still names —
+// and deleting the last one takes the image with it. A delete that reported success while
+// leaving 512 MiB unreachable would be the leak this test exists to prevent.
+func TestDeletingACheckpointFreesOnlyWhatNothingElseUses(t *testing.T) {
+	c := newCheckpointFixture(t)
+	stubQuiesce(t, nil)
+	c.readySandbox(t, "sbx-1")
+
+	first, err := c.manager.Checkpoint(context.Background(), "sbx-1", "c1")
+	require.NoError(t, err)
+	second, err := c.manager.Checkpoint(context.Background(), "sbx-1", "c2")
+	require.NoError(t, err)
+	require.Equal(t, first.Mem.Chunks, second.Mem.Chunks, "the fixture's two images share their chunks")
+
+	shared := chunkFiles(t, c.blobs.Root())
+	require.NotZero(t, shared)
+
+	released, err := c.manager.DeleteCheckpoint(context.Background(), "c1")
+	require.NoError(t, err)
+
+	assert.Positive(t, released.StateBytes, "the checkpoint's own state document is freed")
+	assert.Positive(t, released.DiskBytes, "its own disk copy is freed")
+	assert.Zero(t, released.ChunkBytes, "no chunk is freed while another checkpoint names it")
+	assert.Zero(t, released.Chunks)
+	assert.Positive(t, released.RetainedBytes, "the surviving image is reported as still referenced")
+	assert.Equal(t, 1, released.Retained)
+	assert.Equal(t, released.StateBytes+released.DiskBytes, released.FreedBytes)
+	assert.Equal(t, shared, chunkFiles(t, c.blobs.Root()), "the shared chunks are still there for c2")
+
+	// The record is gone, so nothing can fork what was deleted.
+	_, found, err := c.manager.cfg.Checkpoints.Get("c1")
+	require.NoError(t, err)
+	assert.False(t, found)
+
+	// The last checkpoint of that image takes it with it.
+	released, err = c.manager.DeleteCheckpoint(context.Background(), "c2")
+	require.NoError(t, err)
+	assert.Positive(t, released.ChunkBytes, "the chunks nothing references are reclaimed")
+	assert.Positive(t, released.Chunks)
+	assert.Zero(t, released.Retained)
+	assert.Zero(t, released.RetainedBytes)
+	assert.Zero(t, chunkFiles(t, c.blobs.Root()), "nothing of the memory image is left")
+	assert.Equal(t, released.StateBytes+released.DiskBytes+released.ChunkBytes, released.FreedBytes)
+
+	// And a checkpoint that is not there is a refusal, not a silent success.
+	_, err = c.manager.DeleteCheckpoint(context.Background(), "c2")
+	assert.ErrorIs(t, err, ErrNotFound)
+}
+
+// TestCheckpointRefusesATemplateWhoseAgentCannotFreeze pins the per-call refusal: taking a
+// checkpoint needs a guest that can stop its writers, so an agent that does not advertise
+// quiesce fails this checkpoint — naming the capability — rather than being checkpointed
+// unfrozen.
+func TestCheckpointRefusesATemplateWhoseAgentCannotFreeze(t *testing.T) {
+	c := newCheckpointFixture(t)
+	original := askGuestToQuiesce
+	askGuestToQuiesce = func(context.Context, Record, string) (agent.QuiesceReport, error) {
+		return agent.QuiesceReport{}, &agent.Error{
+			Code:    agent.CodeUnsupportedOp,
+			Message: `quiesce: guest agent does not advertise op "quiesce" (caps: hello,exec,prepare)`,
+		}
+	}
+	t.Cleanup(func() { askGuestToQuiesce = original })
+	c.readySandbox(t, "sbx-1")
+
+	_, err := c.manager.Checkpoint(context.Background(), "sbx-1", "c1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "quiesce")
+	assert.Contains(t, err.Error(), "caps:")
+	assert.Empty(t, c.snapshots.created, "no image is taken of a guest that cannot be stopped")
+}
