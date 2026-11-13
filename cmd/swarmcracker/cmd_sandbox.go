@@ -45,6 +45,8 @@ first; without it every command here reports the socket it could not reach.
   sandbox exec <id> -- <cmd>  Run a command inside a ready sandbox
   sandbox rm <id>             Remove a sandbox and everything it holds
   sandbox token <id>          Mint a token scoped to one sandbox
+  sandbox checkpoint <verb>   Take, list, show or forget a sandbox's images
+  sandbox fork <id>           Clone a running sandbox, or a stored checkpoint
 
 Without --host the commands use the local control socket ($SWARM_SANDBOX_SOCKET,
 default /var/run/swarmcracker/sandboxd.sock), which only a process that can reach
@@ -61,6 +63,8 @@ sandbox-scoped token may exec in its own sandbox and read it, and nothing else.`
 	cmd.AddCommand(newSandboxExecCommand())
 	cmd.AddCommand(newSandboxRemoveCommand())
 	cmd.AddCommand(newSandboxTokenCommand())
+	cmd.AddCommand(newSandboxCheckpointCommand())
+	cmd.AddCommand(newSandboxForkCommand())
 	return cmd
 }
 
@@ -507,4 +511,344 @@ func orDash(value string) string {
 		return "-"
 	}
 	return value
+}
+
+// The checkpoint command group. A checkpoint is a stored image of a sandbox — its memory
+// and its disk — that a fork resumes. It is immutable and it outlives the sandbox it came
+// from, which is why every command here is node-scoped: once the sandbox is gone, these
+// are the only names left that can find the image and free it.
+func newSandboxCheckpointCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "checkpoint",
+		Short: "Take, list, show and forget a sandbox's checkpoint images",
+		Long: `Work with checkpoints: the images a fork resumes.
+
+A checkpoint is taken with the guest's writers stopped, so what it captures is a
+consistent filesystem rather than one mid-write. What is stored on the node — the jail
+paths, the disk copy, the guest credential the image carries — is not reported here; a
+caller sees that a checkpoint exists and what it can resume.
+
+A checkpoint outlives its sandbox: removing the sandbox does not remove it. Free it with
+"sandbox checkpoint rm".`,
+	}
+	cmd.AddCommand(newSandboxCheckpointCreateCommand())
+	cmd.AddCommand(newSandboxCheckpointListCommand())
+	cmd.AddCommand(newSandboxCheckpointShowCommand())
+	cmd.AddCommand(newSandboxCheckpointRemoveCommand())
+	return cmd
+}
+
+func newSandboxCheckpointCreateCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "create <sandbox> <name>",
+		Short: "Take a checkpoint of a running sandbox",
+		Long: `Take a checkpoint of a running sandbox under a name you choose.
+
+The name is yours to choose because it is how you fork the image later and how you free
+it: a node-minted name would only be reachable through a listing. The sandbox must be
+ready, and its guest must implement quiesce — the checkpoint is refused per call, naming
+the capability the template's agent lacks, rather than taking an image whose filesystems
+were never stopped.
+
+The guest's writers are stopped (fsfreeze on each writable, block-device-backed mount) for
+as long as the copy takes, and released afterwards. tmpfs, /dev/shm and an overlayfs upper
+layer are not frozen by fsfreeze and are therefore not captured consistently; keep state
+you care about on a frozen mount.`,
+		Args:         cobra.ExactArgs(2),
+		SilenceUsage: true,
+		PreRun:       func(cmd *cobra.Command, _ []string) { setupLogging(logLevel) },
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := newSandboxClientForCommand()
+			if err != nil {
+				return err
+			}
+			defer c.Close()
+
+			checkpoint, err := c.CreateCheckpoint(cmd.Context(), args[0], args[1])
+			if err != nil {
+				return err
+			}
+
+			switch output.Format(outputFormat) {
+			case output.FormatJSON:
+				return printSandboxJSON(cmd.OutOrStdout(), v1.NewCheckpointDocument(checkpoint))
+			case output.FormatName:
+				fmt.Fprintln(cmd.OutOrStdout(), checkpoint.Name)
+				return nil
+			case "", output.FormatTable:
+			default:
+				return output.NewErrorf(output.CodeUsage, "unsupported output format %q for sandbox checkpoint create", outputFormat)
+			}
+
+			writeCheckpointTable(cmd.OutOrStdout(), []v1.Checkpoint{checkpoint})
+			return nil
+		},
+	}
+	return cmd
+}
+
+func newSandboxCheckpointListCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "ls [<sandbox>]",
+		Aliases: []string{"list"},
+		Short:   "List checkpoints, of one sandbox or of the node",
+		Long: `List checkpoints.
+
+Without an argument this lists every checkpoint on the node, which is the listing that
+still finds the images of a sandbox that no longer exists. With a sandbox it lists only
+that sandbox's checkpoints.`,
+		Args:         cobra.MaximumNArgs(1),
+		SilenceUsage: true,
+		PreRun:       func(cmd *cobra.Command, _ []string) { setupLogging(logLevel) },
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := newSandboxClientForCommand()
+			if err != nil {
+				return err
+			}
+			defer c.Close()
+
+			var items []v1.Checkpoint
+			if len(args) == 1 {
+				items, err = c.ListSandboxCheckpoints(cmd.Context(), args[0])
+			} else {
+				items, err = c.ListCheckpoints(cmd.Context())
+			}
+			if err != nil {
+				return err
+			}
+
+			switch output.Format(outputFormat) {
+			case output.FormatJSON:
+				return printSandboxJSON(cmd.OutOrStdout(), v1.NewCheckpointList(items))
+			case output.FormatName:
+				for _, chk := range items {
+					fmt.Fprintln(cmd.OutOrStdout(), chk.Name)
+				}
+				return nil
+			case "", output.FormatTable:
+			default:
+				return output.NewErrorf(output.CodeUsage, "unsupported output format %q for sandbox checkpoint ls", outputFormat)
+			}
+
+			if len(items) == 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "No checkpoints. Take one with `swarmcracker sandbox checkpoint create <sandbox> <name>`.")
+				return nil
+			}
+			writeCheckpointTable(cmd.OutOrStdout(), items)
+			return nil
+		},
+	}
+	return cmd
+}
+
+func newSandboxCheckpointShowCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:          "inspect <name>",
+		Aliases:      []string{"show"},
+		Short:        "Show one checkpoint",
+		Args:         cobra.ExactArgs(1),
+		SilenceUsage: true,
+		PreRun:       func(cmd *cobra.Command, _ []string) { setupLogging(logLevel) },
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := newSandboxClientForCommand()
+			if err != nil {
+				return err
+			}
+			defer c.Close()
+
+			checkpoint, err := c.GetCheckpoint(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+
+			switch output.Format(outputFormat) {
+			case output.FormatJSON:
+				return printSandboxJSON(cmd.OutOrStdout(), v1.NewCheckpointDocument(checkpoint))
+			case output.FormatName:
+				fmt.Fprintln(cmd.OutOrStdout(), checkpoint.Name)
+				return nil
+			case "", output.FormatTable:
+			default:
+				return output.NewErrorf(output.CodeUsage, "unsupported output format %q for sandbox checkpoint inspect", outputFormat)
+			}
+
+			out := cmd.OutOrStdout()
+			fmt.Fprintf(out, "Name:        %s\n", checkpoint.Name)
+			fmt.Fprintf(out, "Sandbox:     %s\n", orDash(checkpoint.Sandbox))
+			fmt.Fprintf(out, "Template:    %s\n", orDash(checkpoint.Template))
+			fmt.Fprintf(out, "Kernel:      %s\n", orDash(checkpoint.Kernel))
+			fmt.Fprintf(out, "Size:        %s\n", snapshotFormatBytes(checkpoint.SizeBytes))
+			fmt.Fprintf(out, "Quiesce:     %s\n", orDash(checkpoint.QuiesceMode))
+			fmt.Fprintf(out, "Mounts:      %s\n", orDash(strings.Join(checkpoint.QuiesceMounts, ", ")))
+			fmt.Fprintf(out, "Egress:      %s\n", orDash(strings.Join(checkpoint.Egress, ", ")))
+			fmt.Fprintf(out, "Created:     %s\n", orDash(checkpoint.CreatedAt))
+			return nil
+		},
+	}
+	return cmd
+}
+
+func newSandboxCheckpointRemoveCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "rm <name>",
+		Aliases: []string{"remove"},
+		Short:   "Forget a checkpoint and free what it held",
+		Long: `Forget a checkpoint: its record, its state document, its disk copy, and the memory
+image chunks nothing else references.
+
+A checkpoint's memory image is stored as chunks shared with every other checkpoint of the
+same sandbox, so removing one of two forks frees only the chunks the other does not use.
+The response therefore separates what was freed from what is retained — retainedBytes is
+what the remaining checkpoints still reference, counted once per referencing checkpoint
+rather than deduplicated — so that "removed" is never read as "the disk came back".
+
+Forgetting a checkpoint leaves the sandboxes forked from it running: they have their own
+disk and their own memory.`,
+		Args:         cobra.ExactArgs(1),
+		SilenceUsage: true,
+		PreRun:       func(cmd *cobra.Command, _ []string) { setupLogging(logLevel) },
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := newSandboxClientForCommand()
+			if err != nil {
+				return err
+			}
+			defer c.Close()
+
+			removal, err := c.DeleteCheckpoint(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+
+			switch output.Format(outputFormat) {
+			case output.FormatJSON:
+				// The removal document whole, freed and retained: a caller that asked for
+				// JSON gets what the API answered, not a summary of it.
+				return printSandboxJSON(cmd.OutOrStdout(), removal)
+			case output.FormatName:
+				fmt.Fprintln(cmd.OutOrStdout(), removal.Checkpoint)
+				return nil
+			case "", output.FormatTable:
+			default:
+				return output.NewErrorf(output.CodeUsage, "unsupported output format %q for sandbox checkpoint rm", outputFormat)
+			}
+
+			out := cmd.OutOrStdout()
+			freed := removal.Freed
+			fmt.Fprintf(out, "%s removed\n", removal.Checkpoint)
+			fmt.Fprintf(out, "  freed:  %s (state %s, disk %s, memory chunks %s in %d chunks)\n",
+				snapshotFormatBytes(freed.FreedBytes), snapshotFormatBytes(freed.StateBytes), snapshotFormatBytes(freed.DiskBytes),
+				snapshotFormatBytes(freed.ChunkBytes), freed.Chunks)
+			fmt.Fprintf(out, "  retained: %s referenced by %d checkpoint(s), counted once per reference and not deduplicated\n",
+				snapshotFormatBytes(freed.RetainedBytes), freed.Retained)
+			return nil
+		},
+	}
+	return cmd
+}
+
+// writeCheckpointTable writes the checkpoint listing every checkpoint command shares.
+func writeCheckpointTable(out io.Writer, items []v1.Checkpoint) {
+	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "NAME\tSANDBOX\tTEMPLATE\tMEMORY\tQUIESCE\tSIZE")
+	for _, chk := range items {
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
+			chk.Name, orDash(chk.Sandbox), orDash(chk.Template),
+			orDash(fmt.Sprintf("%d MB", chk.MemoryMB)), orDash(chk.QuiesceMode), snapshotFormatBytes(chk.SizeBytes))
+	}
+	_ = w.Flush()
+}
+
+func newSandboxForkCommand() *cobra.Command {
+	var (
+		checkpoint string
+		count      int
+		owner      string
+		idleTTL    time.Duration
+		ids        []string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "fork <sandbox>",
+		Short: "Clone a running sandbox, or a stored checkpoint",
+		Long: `Fork: clone a sandbox from an image of one.
+
+"sandbox fork <sandbox>" clones what that sandbox is running right now: the node takes a
+fresh checkpoint of it first, and the checkpoint it left behind is part of the answer, so
+you can find it later and free it. "sandbox fork --checkpoint <name>" clones a checkpoint
+you already have, which does not need its sandbox to exist any more.
+
+Each clone gets its own disk, its own network namespace, its own IP and MAC, and its own
+credential — it is a separate sandbox, not a second view of the same one.`,
+		Args:         cobra.ExactArgs(1),
+		SilenceUsage: true,
+		PreRun:       func(cmd *cobra.Command, _ []string) { setupLogging(logLevel) },
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if count < 0 {
+				return output.NewErrorf(output.CodeUsage, "-count cannot be negative")
+			}
+			if idleTTL < 0 && idleTTL != -1 {
+				return output.NewErrorf(output.CodeUsage, "-idle-ttl must be positive, or -1 for never")
+			}
+			c, err := newSandboxClientForCommand()
+			if err != nil {
+				return err
+			}
+			defer c.Close()
+
+			req := v1.SandboxFork{
+				Count:          count,
+				Owner:          owner,
+				IdleTTLSeconds: int64(idleTTL / time.Second),
+				IDs:            ids,
+			}
+			var doc v1.SandboxList
+			if checkpoint != "" {
+				doc, err = c.ForkCheckpoint(cmd.Context(), checkpoint, req)
+			} else {
+				doc, err = c.ForkSandbox(cmd.Context(), args[0], req)
+			}
+			if err != nil {
+				return err
+			}
+
+			switch output.Format(outputFormat) {
+			case output.FormatJSON:
+				return printSandboxJSON(cmd.OutOrStdout(), doc)
+			case output.FormatName:
+				for _, sb := range doc.Items {
+					fmt.Fprintln(cmd.OutOrStdout(), sb.ID)
+				}
+				return nil
+			case "", output.FormatTable:
+			default:
+				return output.NewErrorf(output.CodeUsage, "unsupported output format %q for sandbox fork", outputFormat)
+			}
+
+			out := cmd.OutOrStdout()
+			w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+			fmt.Fprintln(w, "ID\tSTATE\tGUEST IP\tTEMPLATE")
+			for _, sb := range doc.Items {
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", sb.ID, sb.State, orDash(sb.GuestIP), orDash(sb.Template))
+			}
+			_ = w.Flush()
+			// The checkpoint is named because the clones were resumed from it and it stays
+			// on the node: a fork whose image the caller cannot name is a fork the caller
+			// cannot free.
+			if doc.Checkpoint != "" {
+				fmt.Fprintf(out, "\ncheckpoint %s holds the image these were forked from.\n", doc.Checkpoint)
+				fmt.Fprintf(out, "Free it with `swarmcracker sandbox checkpoint rm %s` once no more clones are needed.\n", doc.Checkpoint)
+			}
+			return nil
+		},
+	}
+
+	flags := cmd.Flags()
+	flags.StringVar(&checkpoint, "checkpoint", "",
+		"fork a stored checkpoint by name instead of taking a fresh one from <sandbox>")
+	flags.IntVar(&count, "count", 0, "how many clones to create (default 1)")
+	flags.StringVar(&owner, "owner", "", "override the clones' owner")
+	flags.DurationVar(&idleTTL, "idle-ttl", 0,
+		"how long a clone may sit idle before the reaper takes it (0 = the node's default, -1 = never)")
+	flags.StringSliceVar(&ids, "id", nil, "name the clones, in order (repeatable)")
+	return cmd
 }

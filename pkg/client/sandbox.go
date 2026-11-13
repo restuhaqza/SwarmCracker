@@ -285,6 +285,111 @@ func (c *SandboxClient) ExecSandbox(ctx context.Context, id string, req v1.ExecR
 	return decodeExecStream(resp.Body, stdout, stderr)
 }
 
+// ListCheckpoints returns every checkpoint stored on the node, whichever sandbox it
+// came from: a checkpoint outlives its sandbox, so the node-scoped listing is the one
+// that can still find it afterwards.
+func (c *SandboxClient) ListCheckpoints(ctx context.Context) ([]v1.Checkpoint, error) {
+	var doc v1.CheckpointList
+	if err := c.do(ctx, http.MethodGet, []string{"v1", "checkpoints"}, nil, &doc); err != nil {
+		return nil, err
+	}
+	return doc.Items, nil
+}
+
+// ListSandboxCheckpoints returns the checkpoints taken from one sandbox.
+func (c *SandboxClient) ListSandboxCheckpoints(ctx context.Context, id string) ([]v1.Checkpoint, error) {
+	if err := validateSegments([]string{id}); err != nil {
+		return nil, err
+	}
+	var doc v1.CheckpointList
+	if err := c.do(ctx, http.MethodGet, []string{"v1", "sandboxes", id, "checkpoints"}, nil, &doc); err != nil {
+		return nil, err
+	}
+	return doc.Items, nil
+}
+
+// GetCheckpoint returns one checkpoint by name.
+func (c *SandboxClient) GetCheckpoint(ctx context.Context, name string) (v1.Checkpoint, error) {
+	if err := validateSegments([]string{name}); err != nil {
+		return v1.Checkpoint{}, err
+	}
+	var doc v1.CheckpointDocument
+	if err := c.do(ctx, http.MethodGet, []string{"v1", "checkpoints", name}, nil, &doc); err != nil {
+		return v1.Checkpoint{}, err
+	}
+	return doc.Checkpoint, nil
+}
+
+// CreateCheckpoint takes a checkpoint of one sandbox under a name the caller chooses.
+// The name is required because a checkpoint is something the caller forks later, and a
+// minted one would only be reachable through a listing.
+func (c *SandboxClient) CreateCheckpoint(ctx context.Context, id, name string) (v1.Checkpoint, error) {
+	if err := validateSegments([]string{id}); err != nil {
+		return v1.Checkpoint{}, err
+	}
+	body, err := json.Marshal(v1.CheckpointCreate{Name: name})
+	if err != nil {
+		return v1.Checkpoint{}, output.NewErrorf(output.CodeInternal, "encode checkpoint request: %v", err)
+	}
+	var doc v1.CheckpointDocument
+	if err := c.do(ctx, http.MethodPost, []string{"v1", "sandboxes", id, "checkpoints"}, body, &doc); err != nil {
+		return v1.Checkpoint{}, err
+	}
+	return doc.Checkpoint, nil
+}
+
+// DeleteCheckpoint forgets one checkpoint and reports what that actually freed, and what
+// the remaining checkpoints still reference.
+func (c *SandboxClient) DeleteCheckpoint(ctx context.Context, name string) (v1.CheckpointRemoval, error) {
+	if err := validateSegments([]string{name}); err != nil {
+		return v1.CheckpointRemoval{}, err
+	}
+	var doc v1.CheckpointRemoval
+	if err := c.do(ctx, http.MethodDelete, []string{"v1", "checkpoints", name}, nil, &doc); err != nil {
+		return v1.CheckpointRemoval{}, err
+	}
+	return doc, nil
+}
+
+// ForkSandbox clones what a sandbox is running now. The node takes a fresh checkpoint to
+// do it and answers with the clones and the checkpoint it left behind.
+func (c *SandboxClient) ForkSandbox(ctx context.Context, id string, req v1.SandboxFork) (v1.SandboxList, error) {
+	if err := validateSegments([]string{id}); err != nil {
+		return v1.SandboxList{}, err
+	}
+	return c.fork(ctx, []string{"v1", "sandboxes", id, "fork"}, req)
+}
+
+// ForkCheckpoint clones a stored checkpoint by name.
+func (c *SandboxClient) ForkCheckpoint(ctx context.Context, name string, req v1.SandboxFork) (v1.SandboxList, error) {
+	if err := validateSegments([]string{name}); err != nil {
+		return v1.SandboxList{}, err
+	}
+	return c.fork(ctx, []string{"v1", "checkpoints", name, "fork"}, req)
+}
+
+// RestoreCheckpoint is one clone of a checkpoint, on the sandbox-scoped route.
+func (c *SandboxClient) RestoreCheckpoint(ctx context.Context, id, name string, req v1.SandboxFork) (v1.SandboxList, error) {
+	if err := validateSegments([]string{id, name}); err != nil {
+		return v1.SandboxList{}, err
+	}
+	return c.fork(ctx, []string{"v1", "sandboxes", id, "checkpoints", name, "restore"}, req)
+}
+
+// fork posts a fork body and returns the document, which carries the clones and, on the
+// routes that mint one, the checkpoint they came from.
+func (c *SandboxClient) fork(ctx context.Context, segments []string, req v1.SandboxFork) (v1.SandboxList, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return v1.SandboxList{}, output.NewErrorf(output.CodeInternal, "encode fork request: %v", err)
+	}
+	var doc v1.SandboxList
+	if err := c.do(ctx, http.MethodPost, segments, body, &doc); err != nil {
+		return v1.SandboxList{}, err
+	}
+	return doc, nil
+}
+
 // do runs one request that answers with a JSON document.
 func (c *SandboxClient) do(ctx context.Context, method string, segments []string, body []byte, out any) error {
 	req, err := c.request(ctx, method, segments, body)
