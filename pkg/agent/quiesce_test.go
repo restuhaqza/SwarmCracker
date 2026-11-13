@@ -273,3 +273,27 @@ func TestPrepareReleasesTheFreezeOnlyWhenQuiesceIsAdvertised(t *testing.T) {
 	withoutQuiesce := asked([]string{CapHello, CapPrepare})
 	assert.Empty(t, withoutQuiesce, "an older agent cannot have been frozen and is not asked to release anything")
 }
+
+// TestAQuiesceWhoseMountTableCannotBeRead pins the table both directions come from: a guest
+// whose mounts cannot be read is not a guest with nothing to freeze, and a checkpoint that
+// treated it as one would store an image nobody froze. A caller that has already given up
+// freezes nothing at all.
+func TestAQuiesceWhoseMountTableCannotBeRead(t *testing.T) {
+	original := guestMounts
+	guestMounts = filepath.Join(t.TempDir(), "absent-mounts")
+	t.Cleanup(func() { guestMounts = original })
+
+	_, err := quiesceGuest(context.Background(), QuiesceFreeze)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "absent-mounts")
+
+	// The hook's own release reads the same table, and reports it the same way.
+	_, err = thawAll(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "absent-mounts")
+
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = quiesceGuest(cancelled, QuiesceFreeze)
+	require.ErrorIs(t, err, context.Canceled)
+}

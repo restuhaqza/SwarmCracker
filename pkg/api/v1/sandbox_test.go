@@ -81,3 +81,15 @@ func TestCheckpointDocumentsUseTheContractsKeys(t *testing.T) {
 	assert.Equal(t, "c1", raw["checkpoint"])
 	assert.NotContains(t, raw, "Checkpoint")
 }
+
+// TestNewCheckpointListAlwaysCarriesAnArray pins the envelope a client can rely on: a node
+// with no checkpoints answers with an empty array, not with a missing field a reader has to
+// distinguish from "not asked".
+func TestNewCheckpointListAlwaysCarriesAnArray(t *testing.T) {
+	doc := NewCheckpointList(nil)
+
+	require.NotNil(t, doc.Items)
+	assert.Empty(t, doc.Items)
+	assert.Equal(t, KindCheckpointList, doc.Kind)
+	assert.Equal(t, SchemaVersion, doc.SchemaVersion)
+}

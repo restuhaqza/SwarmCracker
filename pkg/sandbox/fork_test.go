@@ -38,6 +38,13 @@ type fakeSnapshots struct {
 	// omitDisk makes the working copy name a disk it never wrote: the publication
 	// failure a checkpoint meets when the snapshot manager's copy is gone.
 	omitDisk bool
+	// omitState and omitMemory do the same for the other two files, so a publish that
+	// cannot read what it was handed is reachable without a failing disk.
+	omitState  bool
+	omitMemory bool
+	// deleteErr refuses the removal of the snapshot's own record: the working copy a
+	// published checkpoint tries to forget.
+	deleteErr error
 }
 
 func (f *fakeSnapshots) CreateSnapshot(_ context.Context, instanceID, socketPath string, opts snapshot.CreateOptions) (*snapshot.SnapshotInfo, error) {
@@ -74,9 +81,18 @@ func (f *fakeSnapshots) CreateSnapshot(_ context.Context, instanceID, socketPath
 		}
 	}
 	f.copies++
+	// The manager is handed paths for the files it should read back, which may name
+	// files this fixture never wrote.
+	statePath, memoryPath := state, memory
+	if f.omitState {
+		statePath = filepath.Join(dir, "absent.state")
+	}
+	if f.omitMemory {
+		memoryPath = filepath.Join(dir, "absent.mem")
+	}
 	return &snapshot.SnapshotInfo{
 		ID: id, TaskID: instanceID, CreatedAt: time.Now().UTC(),
-		StatePath: state, MemoryPath: memory, DiskPath: disk,
+		StatePath: statePath, MemoryPath: memoryPath, DiskPath: disk,
 		RootfsPath: opts.RootfsPath, Jailed: opts.JailRoot != "",
 		SizeBytes: int64(5*checkpoint.ChunkSize + 17),
 	}, nil
@@ -84,6 +100,9 @@ func (f *fakeSnapshots) CreateSnapshot(_ context.Context, instanceID, socketPath
 
 func (f *fakeSnapshots) DeleteSnapshot(_ context.Context, id string) error {
 	f.deleted = append(f.deleted, id)
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
 	return os.RemoveAll(filepath.Join(f.dir, id))
 }
 
@@ -93,9 +112,14 @@ func (f *fakeSnapshots) DeleteSnapshot(_ context.Context, id string) error {
 type forkNetwork struct {
 	attached []string
 	detached []string
+	// err refuses every attach: the node's networking as a resource it cannot get.
+	err error
 }
 
 func (n *forkNetwork) Attach(_ context.Context, id string, _ []string) (netpolicy.Network, error) {
+	if n.err != nil {
+		return netpolicy.Network{}, n.err
+	}
 	n.attached = append(n.attached, id)
 	octet := len(n.attached)
 	return netpolicy.Network{

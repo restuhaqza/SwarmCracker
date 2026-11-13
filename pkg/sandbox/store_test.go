@@ -245,3 +245,53 @@ func TestStoreRefusesARecordItCouldNotHaveWritten(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "state")
 }
+
+// TestStoreRefusesADirectoryItCannotWrite pins the check a daemon start makes: a state
+// directory that cannot be created or written refuses the store, rather than accepting
+// records it cannot keep.
+func TestStoreRefusesADirectoryItCannotWrite(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "a-file")
+	require.NoError(t, os.WriteFile(file, []byte("in the way"), 0o600))
+	_, err := NewStore(StoreConfig{Dir: filepath.Join(file, "under-a-file")})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "create")
+
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: a directory that refuses writes cannot be built")
+	}
+	readonly := filepath.Join(t.TempDir(), "readonly")
+	require.NoError(t, os.Mkdir(readonly, 0o500))
+	_, err = NewStore(StoreConfig{Dir: readonly})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not writable")
+}
+
+// TestStoreReportsARecordItCannotWrite pins the two write failures a record store meets on
+// a node whose disk is the problem: a directory that will not take a temporary file, and a
+// name the record cannot be renamed onto. Both are reported with the store's own path,
+// because a full store is a different next step from a bad record.
+func TestStoreReportsARecordItCannotWrite(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: a directory that refuses writes cannot be built")
+	}
+
+	// A directory where the record belongs: the rename cannot land on it.
+	store := newTestStore(t)
+	require.NoError(t, store.Put(testRecord("sbx1")))
+	occupied := recordPath(store.Dir(), "sbx1")
+	require.NoError(t, os.Remove(occupied))
+	require.NoError(t, os.Mkdir(occupied, 0o700))
+
+	err := store.Put(testRecord("sbx1"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "rename into place")
+
+	// A store directory that refuses writes cannot take the temporary either.
+	blocked := newTestStore(t)
+	require.NoError(t, os.Chmod(blocked.Dir(), 0o500))
+	t.Cleanup(func() { _ = os.Chmod(blocked.Dir(), 0o700) })
+
+	err = blocked.Put(testRecord("sbx2"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "create temporary file")
+}

@@ -780,3 +780,27 @@ func TestGenerationIDIsTheMachinesIdentity(t *testing.T) {
 	assert.Equal(t, base.GenerationID(), same.GenerationID(),
 		"the same machine is the same machine")
 }
+
+// TestAFailedReleaseFailsThePrepareBeforeItWrites pins the hook's own failure: a resumed
+// guest whose filesystems will not be released is refused here, naming the operation, rather
+// than hanging on the first write the hook makes — and nothing of the identity is applied,
+// because an instance whose writers are blocked is not one that was prepared.
+func TestAFailedReleaseFailsThePrepareBeforeItWrites(t *testing.T) {
+	applied := installPrepareSeams(t, helloIdentity(), nil, nil)
+
+	// The guest cannot release the mount its image was frozen on.
+	frozenErr := errors.New("quiesce /: ioctl: operation not permitted")
+	original := thawFilesystem
+	thawFilesystem = func(string) (bool, error) { return false, frozenErr }
+	t.Cleanup(func() { thawFilesystem = original })
+
+	conn, _ := newPipePair(t)
+	require.NoError(t, WriteFrame(conn, Request{Op: CapPrepare, ID: "7"}))
+
+	msg := readMessage(t, conn)
+	require.Equal(t, "error", msg.Type)
+	assert.Equal(t, CodePrepareFailed, msg.ErrorCode)
+	assert.Contains(t, msg.Error, "release the freeze")
+	assert.Contains(t, msg.Error, "/")
+	assert.Empty(t, *applied, "a hook that could not release the freeze applies nothing")
+}
