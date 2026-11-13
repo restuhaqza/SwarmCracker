@@ -430,6 +430,35 @@ Exec is the same `application/x-ndjson` stream, frame for frame, as
 document advertises the `sandboxes` capability exactly when the node serves one; a node
 without a control plane answers `501` with `details.capability` = `sandboxes`.
 
+## Events
+
+Sandbox changes are streamed on the same `GET /v1/events` stream as the cluster's,
+selected with `types=sandbox`:
+
+| Type | When |
+|---|---|
+| `sandbox.created` | A sandbox this node's API created, and each clone a fork made |
+| `sandbox.failed` | A create that left a failed record behind; `object.reason` says why |
+| `sandbox.removed` | A sandbox an API call ended |
+
+```bash
+# SSE by default; the node's own events are selected with types=sandbox.
+curl -sN -H "Authorization: Bearer $TOKEN" \
+  "https://node:4250/v1/events?types=sandbox&include=object"
+```
+
+A sandbox is not a SwarmKit object, so nothing watches it for the API: these events come
+from the node that serves them, which is why they are the only live-only events on that
+stream. A sandbox event carries an empty `cursor`, so `since` does not resume across it,
+and a watcher that connects after a change does not receive it — dedupe by
+`resource.id`, and read `sandbox ls` for the current state rather than replaying a
+history that does not exist.
+
+Two changes are **not** on the stream yet, because they happen in the node's own loops
+rather than in an API call: a removal the reaper performs, and a reconcile pass that
+marks a lost sandbox `failed`. Publishing those needs the publisher to live inside the
+control plane (`pkg/sandbox`), which is the next step for this stream.
+
 ## Not in this slice
 
 These are the boundaries of the first sandbox slice, not gaps in it:

@@ -167,9 +167,10 @@ class ErrorDocument(TypedDict):
 class Event(TypedDict):
     schemaVersion: Literal[1]
     kind: Literal["Event"]
+    # The watch batch boundary of a cluster event; every event in one batch shares it. Empty for a node-local event (a sandbox change), which is live-only and cannot be resumed from.
     cursor: str
     at: NotRequired[str]
-    # <resource>.<created|updated|removed>
+    # <resource>.<created|updated|removed|failed>
     type: str
     resource: EventResource
     revision: NotRequired[str]
@@ -178,6 +179,7 @@ class Event(TypedDict):
     object: NotRequired[dict[str, Any]]
 
 class EventResource(TypedDict):
+    # The resource's kind: Service, Task, Node, Network, Config, Secret or Sandbox.
     kind: str
     id: str
     name: NotRequired[str]
