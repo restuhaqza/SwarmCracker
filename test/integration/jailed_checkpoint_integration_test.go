@@ -72,6 +72,7 @@ import (
 	sandboxpkg "github.com/restuhaqza/swarmcracker/pkg/sandbox"
 	"github.com/restuhaqza/swarmcracker/pkg/sandboxd"
 	"github.com/restuhaqza/swarmcracker/pkg/snapshot"
+	"github.com/restuhaqza/swarmcracker/pkg/vminstance"
 )
 
 const (
@@ -103,61 +104,13 @@ func TestIntegration_JailedCheckpoint(t *testing.T) {
 	requireSandboxHost(t)
 
 	ctx := context.Background()
-	scratch := checkpointScratch(t)
-
-	// Everything this run creates lives under one directory of its own; the names
-	// below are the node paths the manager is configured with, so nothing here
-	// reads or writes the state directory, the jail base or the rootfs directory
-	// of the node the test runs on.
-	stateDir := filepath.Join(scratch, "state")
-	goldenDir := filepath.Join(scratch, "golden")
-	rootfsDir := filepath.Join(scratch, "rootfs")
-	logDir := filepath.Join(scratch, "logs")
-	jailBase := filepath.Join(scratch, "jails")
-	snapshotDir := filepath.Join(scratch, "snapshots")
-
-	// The template this run checkpoints, staged verbatim from the build's output
-	// directory into this run's own golden directory.
-	templateRef := stageCheckpointTemplate(t, goldenDir)
-
-	checkpoints, err := sandboxpkg.NewCheckpointStore(filepath.Join(stateDir, "checkpoints"))
-	require.NoError(t, err)
-	blobs, err := checkpoint.NewLocal(checkpoint.LocalConfig{Root: filepath.Join(stateDir, "blobs")})
-	require.NoError(t, err)
-	snapshots, err := snapshot.NewManager(snapshot.SnapshotConfig{SnapshotDir: snapshotDir})
-	require.NoError(t, err)
-
-	// The node's own assembly, from values: the same function cmd/sandboxd calls
-	// with the values its flags produced. A manager this file assembled itself
-	// would be evidence about this file.
-	manager, tokens, err := sandboxd.New(sandboxd.Config{
-		StateDir:        stateDir,
-		GoldenDir:       goldenDir,
-		KernelPath:      testAsset(t, "SWARMCRACKER_TEST_KERNEL", "/usr/share/firecracker/vmlinux"),
-		KernelProfiles:  config.DefaultKernelProfiles(),
-		RootfsDir:       rootfsDir,
-		LogDir:          logDir,
-		JailerPath:      lookPath(t, "jailer"),
-		JailerChrootDir: jailBase,
-		JailerUIDFirst:  jailedTestUIDBase,
-		JailerUIDSize:   8,
-		ParentCgroup:    checkpointCgroup,
-		VMMPidsMax:      64,
-		VCPUs:           checkpointVCPUs,
-		MemoryMB:        checkpointMemoryMB,
-		DefaultTTL:      0,
-		ReadyTimeout:    90 * time.Second,
-		Checkpoints:     checkpoints,
-		CheckpointBlobs: blobs,
-		Snapshots:       snapshots,
-	})
-	require.NoError(t, err, "build the node's sandbox manager the way sandboxd builds it")
-	require.NotNil(t, tokens)
+	node := newSliceNode(t)
 
 	// The create path the control plane serves, with the template this run staged
+	// The create path the control plane serves, with the template this run staged
 	// and an ID nothing else on the node uses.
-	rec, err := manager.Create(ctx, sandboxpkg.CreateRequest{
-		Template: templateRef,
+	rec, err := node.manager.Create(ctx, sandboxpkg.CreateRequest{
+		Template: node.templateRef,
 		ID:       checkpointSandboxID,
 		VCPUs:    checkpointVCPUs,
 		MemoryMB: checkpointMemoryMB,
@@ -167,7 +120,7 @@ func TestIntegration_JailedCheckpoint(t *testing.T) {
 	})
 	require.NoError(t, err, "create the sandbox the checkpoint is taken of")
 	t.Cleanup(func() {
-		if _, err := manager.Remove(context.Background(), rec.ID); err != nil {
+		if _, err := node.manager.Remove(context.Background(), rec.ID); err != nil {
 			t.Logf("removing sandbox %s after the run: %v", rec.ID, err)
 		}
 	})
@@ -175,15 +128,15 @@ func TestIntegration_JailedCheckpoint(t *testing.T) {
 		rec.ID, rec.State, rec.NetNS, rec.Disk, rec.JailRoot, rec.AgentVersion)
 
 	// The number this run exists for.
-	chk, err := manager.Checkpoint(ctx, rec.ID, checkpointName)
+	chk, err := node.manager.Checkpoint(ctx, rec.ID, checkpointName)
 	require.NoError(t, err, "Manager.Checkpoint: the jail-aware snapshot create, reached the way the control plane reaches it")
 	t.Cleanup(func() {
-		if err := checkpoints.Delete(checkpointName); err != nil {
+		if err := node.checkpoints.Delete(checkpointName); err != nil {
 			t.Logf("deleting checkpoint %s after the run: %v", checkpointName, err)
 		}
 	})
 
-	evidence(t, chk, snapshotDir)
+	evidence(t, chk, node.snapshotsDir)
 }
 
 // evidence reports what a published checkpoint is made of, and refuses a
@@ -266,6 +219,91 @@ func evidence(t *testing.T, chk sandboxpkg.CheckpointRecord, snapshotDir string)
 			"the working copy the checkpoint was published from is gone")
 	}
 	t.Logf("snapshot store %s holds %d entries after the publish", snapshotDir, len(entries))
+}
+
+// sliceNode is the node one host-evidence run builds for itself: the manager the
+// daemon's own assembly (pkg/sandboxd) produces from values, the stores it wrote
+// to, and a reader for the instance registry a clone's VMM pid lives in.
+//
+// It exists once so the checkpoint run and the fork run cannot drift apart: a
+// fork proven on a differently wired manager would be evidence about the fixture.
+type sliceNode struct {
+	manager *sandboxpkg.Manager
+	// checkpoints and snapshotsDir are where a checkpoint lands, and the working
+	// copies the snapshot manager makes on the way.
+	checkpoints  *sandboxpkg.CheckpointStore
+	snapshotsDir string
+	// stateDir holds the sandbox records, the checkpoint store and the registry.
+	stateDir string
+	// instances reads the registry the launcher publishes into: the host's own
+	// answer about which process is a sandbox's VMM.
+	instances *vminstance.Store
+	// templateRef is the template staged from the built artifact, as the sidecar
+	// names it.
+	templateRef string
+}
+
+// newSliceNode builds the node with everything under one scratch directory of its
+// own, whose every runtime name starts with sbx-fork-.
+func newSliceNode(t *testing.T) *sliceNode {
+	t.Helper()
+
+	scratch := checkpointScratch(t)
+	stateDir := filepath.Join(scratch, "state")
+	goldenDir := filepath.Join(scratch, "golden")
+	rootfsDir := filepath.Join(scratch, "rootfs")
+	logDir := filepath.Join(scratch, "logs")
+	jailBase := filepath.Join(scratch, "jails")
+	snapshotsDir := filepath.Join(scratch, "snapshots")
+
+	checkpoints, err := sandboxpkg.NewCheckpointStore(filepath.Join(stateDir, "checkpoints"))
+	require.NoError(t, err)
+	blobs, err := checkpoint.NewLocal(checkpoint.LocalConfig{Root: filepath.Join(stateDir, "blobs")})
+	require.NoError(t, err)
+	snapshots, err := snapshot.NewManager(snapshot.SnapshotConfig{SnapshotDir: snapshotsDir})
+	require.NoError(t, err)
+
+	// The registry the manager publishes into, opened a second time so a run can
+	// read what the launcher wrote: a sandbox's VMM pid, its socket and the
+	// namespace its devices are in.
+	instances, err := vminstance.NewStore(vminstance.Config{Dir: vminstance.Dir(stateDir)})
+	require.NoError(t, err)
+
+	// The node's own assembly, from values: the same function cmd/sandboxd calls
+	// with the values its flags produced. A manager this file assembled itself
+	// would be evidence about this file.
+	manager, tokens, err := sandboxd.New(sandboxd.Config{
+		StateDir:        stateDir,
+		GoldenDir:       goldenDir,
+		KernelPath:      testAsset(t, "SWARMCRACKER_TEST_KERNEL", "/usr/share/firecracker/vmlinux"),
+		KernelProfiles:  config.DefaultKernelProfiles(),
+		RootfsDir:       rootfsDir,
+		LogDir:          logDir,
+		JailerPath:      lookPath(t, "jailer"),
+		JailerChrootDir: jailBase,
+		JailerUIDFirst:  jailedTestUIDBase,
+		JailerUIDSize:   8,
+		ParentCgroup:    checkpointCgroup,
+		VMMPidsMax:      64,
+		VCPUs:           checkpointVCPUs,
+		MemoryMB:        checkpointMemoryMB,
+		DefaultTTL:      0,
+		ReadyTimeout:    90 * time.Second,
+		Checkpoints:     checkpoints,
+		CheckpointBlobs: blobs,
+		Snapshots:       snapshots,
+	})
+	require.NoError(t, err, "build the node's sandbox manager the way sandboxd builds it")
+	require.NotNil(t, tokens)
+
+	return &sliceNode{
+		manager:      manager,
+		checkpoints:  checkpoints,
+		snapshotsDir: snapshotsDir,
+		stateDir:     stateDir,
+		instances:    instances,
+		templateRef:  stageCheckpointTemplate(t, goldenDir),
+	}
 }
 
 // checkpointScratch makes the directory this run owns. It is not t.TempDir(): the
