@@ -52,8 +52,8 @@ type Checkpoint struct {
 
 // CheckpointDocument is a single-resource Checkpoint document.
 type CheckpointDocument struct {
-	SchemaVersion int `json:"schemaVersion"`
-	Kind          string
+	SchemaVersion int    `json:"schemaVersion"`
+	Kind          string `json:"kind"`
 	Checkpoint
 }
 

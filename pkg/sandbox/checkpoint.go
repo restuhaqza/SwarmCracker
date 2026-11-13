@@ -91,6 +91,23 @@ type CheckpointRecord struct {
 	// Mem is the memory image's manifest: size, chunk digests and the pins it is
 	// valid against (D11). The chunks live in the node's checkpoint store.
 	Mem checkpoint.Manifest `json:"mem"`
+	// VsockPath is the path the guest agent's vsock device is configured with, as the
+	// instance saw it when the images were taken: /run/firecracker/<id>.vsock, inside the
+	// jail. It is recorded because Firecracker freezes a device's configuration in the
+	// snapshot state — the same reason the guest's MAC and addresses cannot be rewritten
+	// from the host (§5.4, D10) — so a resumed guest's muxer appears at *this* path, not at
+	// one derived from the clone's own ID. It is a chroot-relative path, never a host path:
+	// two clones share the string and each resolves it inside its own chroot, which is what
+	// keeps two forks of one checkpoint from reaching for the same socket.
+	//
+	// The rest of the device set is frozen the same way and needs no per-instance value:
+	// the disk is at /drives/rootfs.ext4 and the kernel at /kernel/vmlinux in every jail,
+	// the TAP is tap0 inside the clone's own namespace, and the guest's MAC and addresses
+	// are rewritten from inside the guest by the post-restore hook (D10). What is *not*
+	// frozen is the instance's API socket and console: those are host paths the launcher
+	// creates for the instance, and a fork gets its own.
+	VsockPath string `json:"vsockPath"`
+
 	// State and Disk are this checkpoint's own copies, as host paths.
 	State string `json:"state"`
 	Disk  string `json:"disk"`
@@ -125,6 +142,9 @@ func (c CheckpointRecord) validate() error {
 	}
 	if strings.TrimSpace(c.Template) == "" || strings.TrimSpace(c.Kernel) == "" {
 		return errors.New("a checkpoint names its template and the kernel its guest was running")
+	}
+	if c.VsockPath == "" {
+		return errors.New("a checkpoint names the vsock path its guest agent answers on: the device is frozen in the image")
 	}
 	if c.State == "" || c.Disk == "" {
 		return errors.New("a checkpoint names its state document and its disk copy")

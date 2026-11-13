@@ -222,6 +222,7 @@ func (m *Manager) publishCheckpoint(
 		BootID:       rec.BootID,
 		Quiesce:      QuiesceOutcome{Mode: frozen.Mode, Mounts: frozen.Mounts},
 		Mem:          manifest,
+		VsockPath:    m.chrootVsockPath(rec.ID),
 		State:        statePath,
 		Disk:         diskPath,
 		Token:        token,
@@ -703,7 +704,10 @@ func (m *Manager) buildFork(ctx context.Context, rec *Record, chk CheckpointReco
 		VCPUs:      rec.VCPUs,
 		MemoryMB:   rec.MemoryMB,
 		NetNS:      network.NetNS,
-		VsockPath:  m.chrootVsockPath(rec.ID),
+		// The resumed guest's vsock device is the one frozen in the image, so the muxer
+		// appears at the checkpoint's path — inside this clone's own chroot, which is what
+		// makes the string shared and the socket private.
+		VsockPath:  chk.VsockPath,
 		AgentToken: chk.Token,
 		Net: []snapshot.NetworkInterface{{
 			IfaceID:  ifaceID,

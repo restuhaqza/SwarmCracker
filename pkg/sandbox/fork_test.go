@@ -445,6 +445,7 @@ func TestCheckpointStoreRoundTripAndRules(t *testing.T) {
 		return CheckpointRecord{
 			Name: name, Sandbox: "sbx-1", Template: "base@1", Kernel: "/boot/vmlinux",
 			State: "/var/lib/x/state", Disk: "/var/lib/x/disk.ext4", Token: "0123456789abcdef",
+			VsockPath: "/run/firecracker/sbx-1.vsock",
 			Mem: checkpoint.Manifest{
 				FormatVersion: checkpoint.FormatVersion, ID: name, TotalSize: 4,
 				State:     checkpoint.State{Size: 2, SHA256: strings.Repeat("a", 64)},
@@ -670,4 +671,34 @@ func TestCheckpointReadsTheCredentialBeforeTheImages(t *testing.T) {
 	assert.Contains(t, err.Error(), "agent token")
 	assert.Empty(t, c.snapshots.created, "the images are not taken for a sandbox with no credential")
 	assert.Empty(t, c.network.attached)
+}
+
+// TestForkLaunchesOnTheCheckpointsVsockPath is the class of bug this record field exists
+// for: Firecracker freezes a device's configuration in the snapshot state, so a resumed
+// guest's muxer appears at the path the image recorded — not at one derived from the
+// clone's own ID. Two clones share that string and each resolves it inside its own chroot,
+// which is what keeps the second fork from reaching for the first one's socket.
+func TestForkLaunchesOnTheCheckpointsVsockPath(t *testing.T) {
+	c := newCheckpointFixture(t)
+	stubQuiesce(t, nil)
+	c.readySandbox(t, "parent")
+
+	chk, err := c.manager.Checkpoint(context.Background(), "parent", "c1")
+	require.NoError(t, err)
+	assert.Equal(t, "/run/firecracker/parent.vsock", chk.VsockPath,
+		"the checkpoint records the path the image froze, as the instance saw it")
+
+	forks, err := c.manager.Fork(context.Background(), ForkRequest{Checkpoint: "c1", Count: 2})
+	require.NoError(t, err)
+	require.Len(t, forks, 2)
+	require.Len(t, c.launcher.requests, 2)
+	for _, request := range c.launcher.requests {
+		assert.Equal(t, chk.VsockPath, request.VsockPath,
+			"the fork launches on the image's path, not on one guessed from its own id")
+		assert.NotEqual(t, "/run/firecracker/"+request.InstanceID+".vsock", request.VsockPath)
+	}
+	// The same string twice, because the chroot is what differs: the resolved host path is
+	// the clone's own.
+	assert.Equal(t, c.launcher.requests[0].VsockPath, c.launcher.requests[1].VsockPath)
+	assert.NotEqual(t, forks[0].ID, forks[1].ID)
 }

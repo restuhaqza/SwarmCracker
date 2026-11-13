@@ -40,3 +40,44 @@ func TestSandboxDocumentsCarryTheirEnvelope(t *testing.T) {
 		assert.NotContains(t, string(data), hostOnly, "host layout stays on the node")
 	}
 }
+
+// TestCheckpointDocumentsUseTheContractsKeys pins the JSON *keys*, not only the values: a
+// field without a tag marshals as its Go name, which a client reading "kind" never sees.
+// The checkpoint documents are the ones this caught.
+func TestCheckpointDocumentsUseTheContractsKeys(t *testing.T) {
+	doc := NewCheckpointDocument(Checkpoint{Name: "c1", Sandbox: "sbx-1", QuiesceMode: "fsfreeze"})
+	data, err := json.Marshal(doc)
+	require.NoError(t, err)
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal(data, &raw))
+	assert.Contains(t, raw, "kind")
+	assert.NotContains(t, raw, "Kind")
+	assert.Equal(t, KindCheckpoint, raw["kind"])
+	assert.Equal(t, "c1", raw["name"])
+
+	list := NewCheckpointList([]Checkpoint{{Name: "c1", Sandbox: "sbx-1"}})
+	data, err = json.Marshal(list)
+	require.NoError(t, err)
+	raw = nil
+	require.NoError(t, json.Unmarshal(data, &raw))
+	assert.Contains(t, raw, "kind")
+	assert.NotContains(t, raw, "Kind")
+
+	removal := NewCheckpointRemoval("c1")
+	data, err = json.Marshal(removal)
+	require.NoError(t, err)
+	raw = nil
+	require.NoError(t, json.Unmarshal(data, &raw))
+	assert.Contains(t, raw, "kind")
+	assert.NotContains(t, raw, "Kind")
+
+	// The sandbox list's fork name keeps the same rule.
+	forks := NewSandboxList(nil)
+	forks.Checkpoint = "c1"
+	data, err = json.Marshal(forks)
+	require.NoError(t, err)
+	raw = nil
+	require.NoError(t, json.Unmarshal(data, &raw))
+	assert.Equal(t, "c1", raw["checkpoint"])
+	assert.NotContains(t, raw, "Checkpoint")
+}
