@@ -2434,7 +2434,13 @@ paths:
         "ready", which means its guest agent answered its hello — not that a VMM
         started; the call returns only once that happened, so it can take as long
         as a boot. An id that is already a sandbox is 409 conflict; the node does
-        not replace one. The attempt is audited as sandbox.create.
+        not replace one. Before anything is allocated for it the sandbox is
+        admitted against the node's quota — how many sandboxes one owner may
+        hold, and how much memory and disk all of the node's sandboxes may occupy
+        together — so a refusal is 429 quota_exceeded carrying details.limit and
+        details.used, and it leaves no record, no network namespace, no disk and
+        no VM behind: there is nothing for the caller to clean up. The attempt is
+        audited as sandbox.create.
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
@@ -3345,7 +3351,11 @@ components:
       description: >
         This token exceeded its request bucket. Retry-After is the number of
         seconds until the next token; the error code is rate_limited and
-        retryable is true.
+        retryable is true. A node that will not admit the work asked of it also
+        answers 429, with code quota_exceeded, when its capacity or the caller's
+        share of it is spent: the same Retry-After hint, plus details.resource,
+        details.limit, details.used and details.requested, so a client can tell
+        "slow down" from "there is no room, and here is what is using it".
       headers:
         X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
         X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
@@ -4597,6 +4607,7 @@ components:
             - conflict
             - cursor_expired
             - rate_limited
+            - quota_exceeded
             - unavailable
             - timeout
             - unsupported_version
@@ -4623,6 +4634,14 @@ components:
             failure also carries details.phase, the step that failed. 405, 413 and
             415 keep code `invalid` and put `method_not_allowed`,
             `payload_too_large` or `unsupported_media_type` in details.reason.
+            A refusal of admission (429 `quota_exceeded`) carries
+            details.resource, which limit was reached (`sandboxes_per_owner`,
+            the sandboxes one owner holds; `node_memory_mb` or `node_disk_mb`,
+            the node's own capacity), details.limit, details.used and
+            details.requested in that resource's unit — sandboxes for a
+            per-owner limit, MiB for the node's memory and disk — details.owner
+            when the limit is an owner's, and details.retryAfterMs, the same
+            hint as the Retry-After header.
 
     VersionInfo:
       type: object

@@ -605,11 +605,8 @@ func (s *Server) wrap(requireAuth bool) http.Handler {
 		r = r.WithContext(withIdentity(r.Context(), identity))
 
 		if allowed, retryAfter := s.cfg.RateLimit.Allow(rateLimitKey(identity)); !allowed {
-			seconds := int((retryAfter + time.Second - 1) / time.Second)
-			if seconds < 1 {
-				seconds = 1
-			}
-			w.Header().Set("Retry-After", strconv.Itoa(seconds))
+			// The header comes from the typed error, like every other retry hint:
+			// rateLimitError carries the duration and writeErrorDocument renders it.
 			s.writeError(w, r, rateLimitError(retryAfter, s.cfg.RateLimit))
 			return
 		}
@@ -843,6 +840,17 @@ func writeErrorDocument(w http.ResponseWriter, r *http.Request, status int, type
 	if typed.Code == output.CodeUnauthenticated {
 		w.Header().Set("WWW-Authenticate", bearerScheme)
 	}
+	// A failure that knows when a retry is worth making says so in the header every
+	// HTTP client understands, as well as in details for a client that reads the
+	// document. A hint under a second is a second: Retry-After has no sub-second form,
+	// and a zero would read as "now".
+	if typed.RetryAfter > 0 {
+		seconds := int((typed.RetryAfter + time.Second - 1) / time.Second)
+		if seconds < 1 {
+			seconds = 1
+		}
+		w.Header().Set("Retry-After", strconv.Itoa(seconds))
+	}
 	w.Header().Set("Content-Type", MediaType)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(status)
@@ -928,6 +936,17 @@ func typedError(err error) *output.Error {
 	return output.NewError(output.CodeInternal, err.Error())
 }
 
+// retryAfterMillis renders a retry hint in whole milliseconds, never less than one:
+// a hint of zero would read as "retry now", which is the opposite of what a refusal
+// carrying a retry hint means.
+func retryAfterMillis(d time.Duration) int64 {
+	ms := d.Milliseconds()
+	if ms < 1 {
+		ms = 1
+	}
+	return ms
+}
+
 // statusForCode maps the stable error code to its HTTP status.
 func statusForCode(code output.Code) int {
 	switch code {
@@ -949,6 +968,11 @@ func statusForCode(code output.Code) int {
 		// the host the template was built on.
 		return http.StatusConflict
 	case output.CodeRateLimited:
+		return http.StatusTooManyRequests
+	case output.CodeQuotaExceeded:
+		// The same status as a rate limit, because it is the same instruction: the
+		// node will not do this now. The code, the Retry-After header and the details
+		// are what tell a caller whether to wait or to free something.
 		return http.StatusTooManyRequests
 	case output.CodeUnavailable, output.CodeUnreachable:
 		return http.StatusServiceUnavailable

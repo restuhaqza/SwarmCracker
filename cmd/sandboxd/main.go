@@ -113,6 +113,10 @@ func appFlags() []cli.Flag {
 		&cli.IntFlag{Name: "memory", Value: defaultMemoryMB, Usage: "Default memory (MB) per sandbox"},
 		&cli.DurationFlag{Name: "reap-interval", Value: defaultReapEvery, Usage: "How often idle sandboxes are looked for"},
 		&cli.DurationFlag{Name: "default-ttl", Value: 0, Usage: "Idle TTL applied to a sandbox created without one (0 = never reap)"},
+		&cli.IntFlag{Name: "quota-max-per-owner", Value: sandbox.DefaultMaxSandboxesPerOwner, Usage: "How many sandboxes one owner may hold at once (0 = the built-in default); the next create for that owner answers 429 quota_exceeded"},
+		&cli.IntFlag{Name: "quota-memory-mb", Value: sandbox.DefaultNodeMemoryMB, Usage: "Guest memory (MB) this node admits for sandboxes together (0 = the built-in default)"},
+		&cli.IntFlag{Name: "quota-disk-mb", Value: sandbox.DefaultNodeDiskMB, Usage: "Disk (MB) this node admits for sandbox disks together (0 = the built-in default)"},
+		&cli.DurationFlag{Name: "quota-retry-after", Value: sandbox.DefaultQuotaRetryAfter, Usage: "Retry-After hint a quota refusal carries"},
 		&cli.DurationFlag{Name: "ready-timeout", Value: defaultReadyWindow, Usage: "How long a sandbox's boot may take to reach the guest agent's hello"},
 		&cli.BoolFlag{Name: "no-checkpoints", Usage: "Serve no sandbox checkpoints: the checkpoint routes then answer 501 checkpoints_unavailable"},
 	}
@@ -239,6 +243,16 @@ func build(ctx *cli.Context) (*sandbox.Manager, *apihttp.TokenStore, error) {
 		DefaultTTL:      ctx.Duration("default-ttl"),
 		ReadyTimeout:    ctx.Duration("ready-timeout"),
 		TokenFile:       tokenFile(ctx),
+
+		// The admission limits. pkg/sandbox fills in its own defaults for a zero
+		// field and refuses a negative one, so an operator's typo stops the daemon
+		// instead of quietly admitting everything.
+		Quota: sandbox.Quota{
+			MaxPerOwner: ctx.Int("quota-max-per-owner"),
+			MemoryMB:    ctx.Int("quota-memory-mb"),
+			DiskMB:      ctx.Int("quota-disk-mb"),
+			RetryAfter:  ctx.Duration("quota-retry-after"),
+		},
 
 		// A checkpoint is three stores working together: its record, the chunk store its
 		// memory image lives in, and the snapshot manager that takes the images. They are

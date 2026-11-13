@@ -168,11 +168,22 @@ func TestParseRealSpec(t *testing.T) {
 
 	t.Run("enum properties carry their literals", func(t *testing.T) {
 		code := mustSchema(t, spec, "Error").Property("code")
-		if code == nil || code.Kind != KindEnum || len(code.Enum) != 15 {
-			t.Fatalf("Error.code = %+v, want a 15-value enum", code)
+		// The count is what catches a parser that drops a literal; the named values are
+		// the ones whose spelling is a contract a client matches on.
+		if code == nil || code.Kind != KindEnum || len(code.Enum) != 16 {
+			t.Fatalf("Error.code = %+v, want a 16-value enum", code)
 		}
 		if code.Enum[0].Raw != "invalid" || !code.Enum[0].IsString {
 			t.Errorf("Error.code first literal = %+v", code.Enum[0])
+		}
+		literals := make(map[string]bool, len(code.Enum))
+		for _, literal := range code.Enum {
+			literals[literal.Raw] = true
+		}
+		for _, want := range []string{"rate_limited", "quota_exceeded", "unreachable"} {
+			if !literals[want] {
+				t.Errorf("Error.code is missing the %q literal: %+v", want, code.Enum)
+			}
 		}
 	})
 

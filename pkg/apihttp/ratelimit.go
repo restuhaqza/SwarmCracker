@@ -78,18 +78,15 @@ func (l *RateLimiter) Allow(key string) (bool, time.Duration) {
 	return false, time.Duration(seconds * float64(time.Second))
 }
 
-// rateLimitError is the 429 document. Retry-After is set by the middleware; the
-// details carry the same hint in milliseconds for JSON clients.
+// rateLimitError is the 429 document. The Retry-After header is rendered from the
+// hint this error carries; the details carry the same hint in milliseconds for JSON
+// clients.
 func rateLimitError(retryAfter time.Duration, limiter *RateLimiter) error {
-	ms := retryAfter.Milliseconds()
-	if ms < 1 {
-		ms = 1
-	}
 	err := output.NewError(output.CodeRateLimited,
 		"this token is sending requests faster than the API allows")
 	err.Retryable = true
-	return err.WithDetails(map[string]any{
-		"retryAfterMs": ms,
+	return err.WithRetryAfter(retryAfter).WithDetails(map[string]any{
+		"retryAfterMs": retryAfterMillis(retryAfter),
 		"limitPerSec":  limiter.rate,
 		"burst":        int(limiter.burst),
 	})

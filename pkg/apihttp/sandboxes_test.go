@@ -580,6 +580,40 @@ func TestTypedErrorsKeepTheirCode(t *testing.T) {
 	assert.Equal(t, string(output.CodeRateLimited), decodeErrorBody(t, rec).Error.Code)
 }
 
+// TestQuotaRefusalAnswersWithTheLimits pins the create route's refusal when a node will
+// not admit the sandbox: 429 with its own code, the limit and what was in use in the
+// details, and the Retry-After header — a caller that only reads the status knows to
+// wait, and one that reads the document knows what to wait for or free.
+func TestQuotaRefusalAnswersWithTheLimits(t *testing.T) {
+	boxes := &fakeSandboxes{createErr: &sandbox.QuotaError{
+		Resource:   sandbox.QuotaResourceOwnerSandboxes,
+		Owner:      "ci",
+		Limit:      3,
+		Used:       3,
+		Requested:  1,
+		RetryAfter: 90 * time.Second,
+	}}
+	srv, store := sandboxServer(t, boxes)
+	admin, _, err := store.Create("admin", RoleAdmin)
+	require.NoError(t, err)
+
+	rec := sandboxRequest(t, srv, admin, http.MethodPost, "/v1/sandboxes",
+		`{"template":"base","owner":"ci"}`)
+	require.Equal(t, http.StatusTooManyRequests, rec.Code, rec.Body.String())
+
+	doc := decodeErrorBody(t, rec)
+	assert.Equal(t, string(output.CodeQuotaExceeded), doc.Error.Code)
+	assert.True(t, doc.Error.Retryable, "a spent quota frees up, so the code must say a retry is worth making")
+	assert.Equal(t, sandbox.QuotaResourceOwnerSandboxes, doc.Error.Details["resource"])
+	assert.Equal(t, float64(3), doc.Error.Details["limit"])
+	assert.Equal(t, float64(3), doc.Error.Details["used"])
+	assert.Equal(t, float64(1), doc.Error.Details["requested"])
+	assert.Equal(t, "ci", doc.Error.Details["owner"])
+	assert.Equal(t, float64(90000), doc.Error.Details["retryAfterMs"])
+	assert.Equal(t, "90", rec.Header().Get("Retry-After"), "the hint is in seconds, as HTTP defines it")
+	assert.Contains(t, doc.Error.Message, "ci")
+}
+
 // bodyFor is a minimal body for a method whose body is not the subject of its case.
 func bodyFor(method string) string {
 	if method == http.MethodPost {

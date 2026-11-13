@@ -78,6 +78,12 @@ type Config struct {
 	// agent's hello.
 	ReadyTimeout time.Duration
 
+	// Quota is what this node admits: how many sandboxes one owner may hold, and how
+	// much memory and disk all of them may occupy together. Every field's zero means
+	// the default in pkg/sandbox (sandbox.DefaultQuota), and a negative value stops
+	// the daemon at start rather than being read as "no limit".
+	Quota sandbox.Quota
+
 	// TokenFile is the token store the API authenticates against. Empty means
 	// <StateDir>/api/tokens.json.
 	TokenFile string
@@ -168,6 +174,7 @@ func New(cfg Config) (*sandbox.Manager, *apihttp.TokenStore, error) {
 		VCPUs:           cfg.VCPUs,
 		MemoryMB:        cfg.MemoryMB,
 		DefaultTTL:      cfg.DefaultTTL,
+		Quota:           cfg.Quota,
 		Checkpoints:     cfg.Checkpoints,
 		CheckpointBlobs: cfg.CheckpointBlobs,
 		Snapshots:       cfg.Snapshots,
