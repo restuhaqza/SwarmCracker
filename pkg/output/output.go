@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 
 	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
 )
@@ -37,15 +38,21 @@ func ParseFormat(s string) (Format, error) {
 type Code string
 
 const (
-	CodeInvalid            Code = "invalid"
-	CodeAmbiguous          Code = "ambiguous"
-	CodeNotFound           Code = "not_found"
-	CodeUnauthenticated    Code = "unauthenticated"
-	CodeForbidden          Code = "forbidden"
-	CodeConflict           Code = "conflict"
-	CodeCursorExpired      Code = "cursor_expired"
-	CodePartial            Code = "partial"
-	CodeRateLimited        Code = "rate_limited"
+	CodeInvalid         Code = "invalid"
+	CodeAmbiguous       Code = "ambiguous"
+	CodeNotFound        Code = "not_found"
+	CodeUnauthenticated Code = "unauthenticated"
+	CodeForbidden       Code = "forbidden"
+	CodeConflict        Code = "conflict"
+	CodeCursorExpired   Code = "cursor_expired"
+	CodePartial         Code = "partial"
+	CodeRateLimited     Code = "rate_limited"
+	// CodeQuotaExceeded is a node that cannot admit the work asked of it: its
+	// capacity, or the caller's share of it, is spent. It is separate from
+	// rate_limited because the two are fixed differently — a rate limit clears with
+	// time, a quota clears when a sandbox is removed or reaped — and a caller that
+	// cannot tell them apart cannot tell waiting from freeing something.
+	CodeQuotaExceeded      Code = "quota_exceeded"
 	CodeUnavailable        Code = "unavailable"
 	CodeTimeout            Code = "timeout"
 	CodeUnsupportedVersion Code = "unsupported_version"
@@ -71,6 +78,13 @@ type Error struct {
 	RequestID string         `json:"requestId,omitempty"`
 	Retryable bool           `json:"retryable"`
 	Details   map[string]any `json:"details,omitempty"`
+
+	// RetryAfter is how long the caller should wait before trying again, when the
+	// failure knows. It is not part of the error document — the wire form of the hint
+	// is the Retry-After response header, which the HTTP layer sets from this — and it
+	// is kept off the JSON because a CLI document that carried a raw Go duration
+	// would be a second, unversioned spelling of the same hint.
+	RetryAfter time.Duration `json:"-"`
 }
 
 // NewError creates a typed error with the default retry and exit mapping.
@@ -99,6 +113,13 @@ func (e *Error) WithRequestID(id string) *Error {
 	return e
 }
 
+// WithRetryAfter returns e with the hint that a retry is worth making in d, which the
+// HTTP layer renders as the Retry-After header.
+func (e *Error) WithRetryAfter(d time.Duration) *Error {
+	e.RetryAfter = d
+	return e
+}
+
 // Error implements error.
 func (e *Error) Error() string { return e.Message }
 
@@ -118,7 +139,7 @@ func (e *Error) Document() v1.ErrorDocument {
 
 func retryable(code Code) bool {
 	switch code {
-	case CodeRateLimited, CodeUnavailable, CodeTimeout, CodeInternal, CodeUnreachable:
+	case CodeRateLimited, CodeQuotaExceeded, CodeUnavailable, CodeTimeout, CodeInternal, CodeUnreachable:
 		return true
 	default:
 		return false
@@ -137,7 +158,7 @@ func exitCode(code Code) int {
 		return 7
 	case CodeUnauthenticated, CodeForbidden:
 		return 5
-	case CodeRateLimited, CodeUnavailable, CodeTimeout, CodeUnreachable:
+	case CodeRateLimited, CodeQuotaExceeded, CodeUnavailable, CodeTimeout, CodeUnreachable:
 		return 6
 	case CodeCursorExpired:
 		return 1

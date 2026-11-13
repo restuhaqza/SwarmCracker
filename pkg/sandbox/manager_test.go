@@ -166,6 +166,14 @@ func (c *testClock) Advance(d time.Duration) {
 
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
+	return newFixtureWith(t, nil)
+}
+
+// newFixtureWith is the fixture with one change to the node's configuration, for the
+// tests whose subject is a limit rather than a create: a node wired the way the daemon
+// wires it, differing only in the value under test.
+func newFixtureWith(t *testing.T, tweak func(*Config)) *fixture {
+	t.Helper()
 
 	// The pin check hashes a kernel and reads a Firecracker version, so both have to
 	// exist: a fake binary that prints a version and a file whose digest the template
@@ -225,7 +233,7 @@ func newFixture(t *testing.T) *fixture {
 		vsockDir: filepath.Join(tmp, "run"),
 	}
 
-	manager, err := New(Config{
+	cfg := Config{
 		Store:             store,
 		GoldenDir:         goldenDir,
 		KernelPath:        kernel,
@@ -238,7 +246,11 @@ func newFixture(t *testing.T) *fixture {
 		VCPUs:             1,
 		MemoryMB:          256,
 		Now:               clock.Now,
-	})
+	}
+	if tweak != nil {
+		tweak(&cfg)
+	}
+	manager, err := New(cfg)
 	require.NoError(t, err)
 
 	return &fixture{

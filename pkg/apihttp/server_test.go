@@ -1112,6 +1112,7 @@ func TestErrorStatusMapping(t *testing.T) {
 		{output.CodeForbidden, http.StatusForbidden},
 		{output.CodeConflict, http.StatusConflict},
 		{output.CodeRateLimited, http.StatusTooManyRequests},
+		{output.CodeQuotaExceeded, http.StatusTooManyRequests},
 		{output.CodeUnavailable, http.StatusServiceUnavailable},
 		{output.CodeUnreachable, http.StatusServiceUnavailable},
 		{output.CodeTimeout, http.StatusGatewayTimeout},

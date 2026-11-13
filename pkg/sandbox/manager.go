@@ -110,6 +110,11 @@ type Config struct {
 	// nothing to do, which is the safe default: a node that never configured a TTL
 	// must not start deleting sandboxes someone is using.
 	DefaultTTL time.Duration
+	// Quota is what this node admits: how many sandboxes one owner may hold, and how
+	// much memory and disk all of them may occupy together (admission.go). Every
+	// field's zero means the default above it, and a negative value is refused by New
+	// rather than read as "no limit".
+	Quota Quota
 	// Allow is the egress allowlist a sandbox is created with when the caller names
 	// none: "host:port" destinations, or empty for egress none, which is the
 	// default a sandbox should have.
@@ -185,6 +190,14 @@ func New(cfg Config) (*Manager, error) {
 	if cfg.DefaultTTL < 0 {
 		return nil, fmt.Errorf("sandbox: idle TTL %s is negative", cfg.DefaultTTL)
 	}
+	// A quota that cannot be meant stops the node here rather than being read as "no
+	// limit": the values are what every create is held to, so a node that cannot say
+	// what they are must not be admitting sandboxes at all.
+	quota, err := cfg.Quota.resolve()
+	if err != nil {
+		return nil, err
+	}
+	cfg.Quota = quota
 
 	now := cfg.Now
 	if now == nil {
@@ -237,20 +250,25 @@ type CreateRequest struct {
 //  1. The template is resolved and its pin checked (golden.Resolve) — a template
 //     built by other host software is refused here, before a disk is copied and
 //     before a VMM exists.
-//  2. The record is written in state created, so the sandbox is visible while it is
+//  2. The node admits the sandbox (admission.go): one owner's share of sandboxes, and
+//     the node's memory and disk. This is the last step before anything is allocated,
+//     so a refusal — a 429 quota_exceeded over the API — leaves no record, no
+//     namespace, no disk and no VM behind: the attempt holds nothing to free and
+//     nothing a reader could mistake for a sandbox.
+//  3. The record is written in state created, so the sandbox is visible while it is
 //     being built. A node that dies mid-create leaves a created record rather than
 //     nothing, which is what the reaper and a retried rm work from.
-//  3. The network is attached: the namespace, tap0, the /30 and the default-deny
+//  4. The network is attached: the namespace, tap0, the /30 and the default-deny
 //     policy, with the allowlist as its only openings (netpolicy.Attach).
-//  4. The per-instance disk is materialized from the template's artifact, and the
+//  5. The per-instance disk is materialized from the template's artifact, and the
 //     sandbox's own per-boot agent token is written into it. The token is in the
 //     disk before the guest boots because that is the only moment it can be: the
 //     guest's agent requires the token from its first hello, and Firecracker
 //     refuses to rewrite a disk the guest is already running on.
-//  5. The VM is launched inside the jailer, in the sandbox's namespace, with an
+//  6. The VM is launched inside the jailer, in the sandbox's namespace, with an
 //     identity of its own (host name, machine id, entropy, clock, address, MAC)
 //     that the guest applies through the metadata service.
-//  6. The record becomes ready with what the guest answered. Ready is the agent's
+//  7. The record becomes ready with what the guest answered. Ready is the agent's
 //     hello, not the load: an instance whose agent never answers is a failed create.
 //
 // A create that fails at any step after the record exists leaves that record in
@@ -264,6 +282,13 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (Record, error)
 
 	template, err := m.resolveTemplate(ctx, req.Template)
 	if err != nil {
+		return Record{}, err
+	}
+
+	// Admission, before the ID is settled and before a record exists: a sandbox the
+	// node will not admit must not leave anything behind for this call or a later
+	// teardown to find.
+	if err := m.admit(template, m.size(req.VCPUs, req.MemoryMB), req.Owner); err != nil {
 		return Record{}, err
 	}
 

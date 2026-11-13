@@ -1131,8 +1131,8 @@ path segment (`400 invalid`). The authoritative list of wire codes is the `Error
 schema in `api/openapi.yaml`. The CLI maps its stable codes to process exit
 statuses in `pkg/output` (`usage`/`invalid`/`unsupported_version` → `2`,
 `not_found`/`ambiguous` → `3`, `conflict` → `4`, `unauthenticated`/`forbidden` →
-`5`, `rate_limited`/`unavailable`/`timeout`/`unreachable` → `6`, `partial` →
-`7`, anything else → `1`). Exit `7` is the `task ls --health` partial result:
+`5`, `rate_limited`/`quota_exceeded`/`unavailable`/`timeout`/`unreachable` → `6`,
+`partial` → `7`, anything else → `1`). Exit `7` is the `task ls --health` partial result:
 the page printed, but at least one node could not be read.
 
 ### Rate limits

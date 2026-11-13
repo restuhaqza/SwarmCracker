@@ -52,9 +52,10 @@ exited.
 
 `sandboxd --help` lists the rest: per-sandbox defaults (`--vcpus`, `--memory`), the
 jail uid range, the Jailer's parent cgroup and the VMM cgroup limits, the default idle
-TTL, and an optional TCP listener (`--api-listen`) for token-authenticated callers.
-The Unix socket's file mode is the credential for local callers; the TCP listener is
-TLS and needs a bearer token.
+TTL, the admission limits (`--quota-max-per-owner`, `--quota-memory-mb`,
+`--quota-disk-mb`, `--quota-retry-after`), and an optional TCP listener (`--api-listen`)
+for token-authenticated callers. The Unix socket's file mode is the credential for local
+callers; the TCP listener is TLS and needs a bearer token.
 
 ## Create
 
@@ -83,24 +84,93 @@ Create works through these steps, in this order:
 
 1. The template is resolved and its pin checked. A template built by other host
    software is refused with `template_pin_mismatch` before a disk is copied.
-2. The sandbox record is written in state `created`, and rewritten as each resource is
+2. The node **admits** the sandbox against its quota — see
+   [Quota and admission](#quota-and-admission). A refusal is answered here, while the
+   attempt still holds nothing: no record, no namespace, no disk and no VM.
+3. The sandbox record is written in state `created`, and rewritten as each resource is
    allocated — the namespace, then the disk — so a node that dies mid-create leaves a
    record its teardown can free instead of resources nothing names.
-3. The network is attached: its own namespace, the fixed `tap0` in it, its own `/30`
+4. The network is attached: its own namespace, the fixed `tap0` in it, its own `/30`
    from the sandbox pool, and a default-deny nftables table whose only openings are
    the egress allowlist.
-4. A per-instance disk is materialized from the template's artifact, and this boot's
+5. A per-instance disk is materialized from the template's artifact, and this boot's
    agent token is written into it, so the guest requires that credential from its
    first hello.
-5. The VM is launched inside the jailer, in the sandbox's namespace, with an identity
+6. The VM is launched inside the jailer, in the sandbox's namespace, with an identity
    of its own (host name, machine id, entropy, clock, address, MAC) that the guest
    applies through the metadata service.
-6. The record becomes `ready` with what the guest answered.
+7. The record becomes `ready` with what the guest answered.
 
 Egress is off by default. `--egress host:port` (repeatable) allows exactly that one
 destination and nothing else — not its other ports, not ICMP, not the name's other
 addresses. A name is resolved once, at attach, so the addresses the guest is told and
 the addresses its namespace accepts are one list.
+
+## Quota and admission
+
+A node has finite memory and disk, and one caller must not be able to spend all of it.
+`sandboxd` checks both before it allocates anything for a create:
+
+| Limit | Flag | Default | Counted as |
+|---|---|---|---|
+| Sandboxes one owner may hold at once | `--quota-max-per-owner` | 10 | sandboxes |
+| Guest memory all sandboxes may occupy | `--quota-memory-mb` | 8192 (8 GiB) | MiB |
+| Disk all sandbox disks may occupy | `--quota-disk-mb` | 51200 (50 GiB) | MiB |
+
+All three are checked on every create, not whichever is cheapest: a request the owner
+has room for can still be one the node does not. Every field's `0` means the default
+above it, and a negative value stops `sandboxd` at start — a node that cannot say what
+it admits does not serve. The only way to widen a limit is to name a larger number;
+there is no "unlimited".
+
+What counts against a limit is a sandbox that exists or is being built — state
+`created` or `ready`. A `failed` sandbox holds nothing (the create path freed it) and a
+`stopped` one is on its way out, so neither is counted. A create that names no owner
+shares one bucket with every other unnamed create, because a limit a caller can leave
+by leaving out a field is not a limit.
+
+The memory a create is counted at is the MiB it asked for. The disk is the size of the
+template image it is about to copy — the most that copy can occupy, which is the
+conservative side to be wrong on. An existing sandbox's disk is measured as the file
+the node made.
+
+A refusal answers `429` with code `quota_exceeded` — not `rate_limited`, because the
+two are fixed differently: a rate limit clears with time, a quota clears when a sandbox
+is removed or reaped:
+
+```json
+{
+  "schemaVersion": 1,
+  "kind": "Error",
+  "error": {
+    "code": "quota_exceeded",
+    "message": "sandbox: owner ci already holds 10 of the 10 sandboxes this node allows one owner",
+    "requestId": "req_9c3d1a57b204",
+    "retryable": true,
+    "details": {
+      "resource": "sandboxes_per_owner",
+      "owner": "ci",
+      "limit": 10,
+      "used": 10,
+      "requested": 1,
+      "retryAfterMs": 60000
+    }
+  }
+}
+```
+
+`details.resource` names which limit was reached and therefore the unit of `limit`,
+`used` and `requested`: `sandboxes_per_owner` counts sandboxes, `node_memory_mb` and
+`node_disk_mb` are MiB. `Retry-After` carries the same hint in seconds. It is a hint,
+not a promise: removing a sandbox, or waiting for the reaper, frees its share sooner.
+
+**A refused create leaves nothing behind.** The check runs before the sandbox record is
+written and before the first resource is allocated, so a rejection leaves no record, no
+network namespace, no disk and no VM — there is nothing for `sandbox rm` to clean up and
+nothing for the next `sandbox ls` to show.
+
+Admission covers `sandbox create`. A fork creates sandboxes too and is not yet counted
+against the limit; that lands with the fork-specific accounting.
 
 ## Exec
 
@@ -366,9 +436,11 @@ These are the boundaries of the first sandbox slice, not gaps in it:
 
 - **One node.** The routes are served by a node's `sandboxd`; there is no
   cluster-wide placement, and a sandbox does not migrate.
-- **No file copy, no exposure, no preview proxy, no pool and no quota.**
+- **No file copy, no exposure, no preview proxy, no pool and no cluster-wide quota.**
   `sandbox cp`, `sandbox expose`, the preview proxy, warm pools and per-tenant quotas
-  are later slices. There is no warm pool, so the ready time above is a cold boot.
+  that span nodes are later slices. The quota above is one node's own admission, checked
+  for `sandbox create`; a fork is not yet counted against it. There is no warm pool, so
+  the ready time above is a cold boot.
 - **Exec runs as the guest agent's user** (root inside the sandbox). A per-sandbox
   `--user` is not part of this slice; the isolation boundary is the microVM, not the
   uid inside it.

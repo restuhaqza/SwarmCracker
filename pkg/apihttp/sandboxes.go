@@ -380,6 +380,27 @@ func sandboxAPIError(err error) error {
 		return typed
 	}
 
+	// A refused admission is its own code and its own status, with the numbers a
+	// caller acts on: which limit, what it allows, what was in use, and when asking
+	// again is worth it. It is answered before the sandbox exists, so there is nothing
+	// for the caller to clean up.
+	var quota *sandbox.QuotaError
+	if errors.As(err, &quota) {
+		details := map[string]any{
+			"resource":     quota.Resource,
+			"limit":        quota.Limit,
+			"used":         quota.Used,
+			"requested":    quota.Requested,
+			"retryAfterMs": retryAfterMillis(quota.RetryAfter),
+		}
+		if quota.Owner != "" || quota.Resource == sandbox.QuotaResourceOwnerSandboxes {
+			details["owner"] = quota.Owner
+		}
+		return output.NewError(output.CodeQuotaExceeded, quota.Error()).
+			WithDetails(details).
+			WithRetryAfter(quota.RetryAfter)
+	}
+
 	switch {
 	case errors.Is(err, sandbox.ErrNotImplemented):
 		// Configured without checkpoints: a capability this node does not serve, said so

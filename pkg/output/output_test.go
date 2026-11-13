@@ -30,6 +30,7 @@ func TestExitCodes(t *testing.T) {
 		{CodeUnreachable, 6},
 		{CodeTimeout, 6},
 		{CodeRateLimited, 6},
+		{CodeQuotaExceeded, 6},
 		{CodeUnavailable, 6},
 		{CodeCursorExpired, 1},
 		{CodeInternal, 1},
@@ -46,6 +47,7 @@ func TestRetryable(t *testing.T) {
 	assert.True(t, NewError(CodeUnavailable, "down").Retryable)
 	assert.True(t, NewError(CodeTimeout, "slow").Retryable)
 	assert.True(t, NewError(CodeRateLimited, "later").Retryable)
+	assert.True(t, NewError(CodeQuotaExceeded, "full").Retryable)
 	assert.True(t, NewError(CodeInternal, "bug").Retryable)
 	assert.True(t, NewError(CodeUnreachable, "dial").Retryable)
 	assert.False(t, NewError(CodeNotFound, "missing").Retryable)
