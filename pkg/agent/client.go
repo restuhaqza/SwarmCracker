@@ -833,6 +833,24 @@ func (c *Client) Activity(ctx context.Context) (Activity, error) {
 	return *msg.Activity, nil
 }
 
+// Quiesce stops (QuiesceFreeze) or releases (QuiesceThaw) the guest's writers, and
+// reports which filesystems it acted on (pkg/agent's quiesce.go). A node calls it
+// around a checkpoint: freeze, take the images, thaw.
+//
+// A refusal is an error rather than a report: an image captured while the guest was
+// still writing is a pair of images that disagree, so a caller that cannot freeze must
+// not checkpoint.
+func (c *Client) Quiesce(ctx context.Context, action string) (QuiesceReport, error) {
+	msg, err := c.callExpect(ctx, Request{Op: CapQuiesce, Quiesce: action}, "quiesced")
+	if err != nil {
+		return QuiesceReport{}, err
+	}
+	if msg.Quiesced == nil {
+		return QuiesceReport{}, fmt.Errorf("quiesce: reply carried no report")
+	}
+	return *msg.Quiesced, nil
+}
+
 // CopyTo streams src to guestPath with the given mode (0644 when mode is 0).
 func (c *Client) CopyTo(ctx context.Context, guestPath string, src io.Reader, mode uint32) error {
 	if c.consumed {

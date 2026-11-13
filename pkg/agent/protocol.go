@@ -82,6 +82,10 @@ const (
 	// an idle sandbox without interrupting one that is waiting on a remote API
 	// at almost no CPU (activity.go).
 	CapActivity = "activity"
+	// CapQuiesce stops and releases the guest's writers around a checkpoint: a
+	// sync and a filesystem freeze before the images are taken, a thaw after
+	// (quiesce.go). Only the guest can do it, which is why it is an operation.
+	CapQuiesce = "quiesce"
 )
 
 // capabilities is the closed set of operations this agent build implements. It
@@ -90,7 +94,7 @@ const (
 // would fail after the host committed to it.
 var capabilities = []string{
 	CapHello, CapExec, CapPut, CapGet, CapMetrics, CapPrepare,
-	CapInfo, CapNet, CapStat, CapList, CapTar, CapActivity,
+	CapInfo, CapNet, CapStat, CapList, CapTar, CapActivity, CapQuiesce,
 }
 
 // Capabilities returns the operations this agent build advertises. The result is
@@ -123,6 +127,11 @@ const (
 	// it. It is a failed launch, never a warning, because an instance wearing its
 	// source's identity is not the instance the node asked for.
 	CodePrepareFailed ErrorCode = "prepare_failed"
+	// CodeQuiesceFailed reports that the guest could not stop (or release) its
+	// writers: a filesystem that refuses the freeze ioctl, or a mount table it
+	// cannot read. A checkpoint taken after this failure would be one whose
+	// consistency is unknown, so the node refuses it rather than recording it.
+	CodeQuiesceFailed ErrorCode = "quiesce_failed"
 	// CodeUnsafePath reports a file operation whose path is not inside the
 	// guest's file root: an absolute path, a ".." component that leaves the
 	// root, or a symbolic link that resolves outside it. It is separate from
@@ -232,6 +241,12 @@ type Request struct {
 	// rootfs. It is carried only by hello; a guest agent with a token configured
 	// closes the connection without a frame when it is missing or wrong.
 	Token string `json:"token,omitempty"`
+	// Quiesce is the direction a quiesce request asks for: "freeze" or "thaw".
+	// It is one field rather than two operations because the v2 op set is closed
+	// (RFC D9) and the two directions are the same decision, taken and released.
+	// Empty is refused: guessing a direction would either leave a checkpoint
+	// inconsistent or leave a guest's writers blocked.
+	Quiesce string `json:"quiesce,omitempty"`
 }
 
 // Message is a single frame sent from the guest agent back to the host.
@@ -268,6 +283,9 @@ type Message struct {
 	ErrorCode ErrorCode `json:"errorCode,omitempty"`
 	// Metrics is set on the reply to a metrics request.
 	Metrics *GuestMetrics `json:"metrics,omitempty"`
+	// Quiesced is set on the reply to a quiesce request: which filesystems the
+	// guest froze (or released) and by which mechanism.
+	Quiesced *QuiesceReport `json:"quiesced,omitempty"`
 	// Prepared is set on the reply to a prepare request: what the guest carries
 	// after it applied the identity its node published.
 	Prepared *PrepareReport `json:"prepared,omitempty"`
