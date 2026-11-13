@@ -806,7 +806,11 @@ func TestAForkWhoseReleaseFailsIsNotReady(t *testing.T) {
 	}
 	t.Cleanup(func() { askGuestToQuiesce = original })
 
-	forks, err := c.manager.Fork(context.Background(), ForkRequest{Checkpoint: "c1", IDs: []string{"clone-1"}})
+	// The request's own budget is what ends the retries: a clone whose release never
+	// succeeds is one the launch gives up on, not one it waits for for ever.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	forks, err := c.manager.Fork(ctx, ForkRequest{Checkpoint: "c1", IDs: []string{"clone-1"}})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "release the writers")
 	assert.Empty(t, forks)
@@ -815,4 +819,57 @@ func TestAForkWhoseReleaseFailsIsNotReady(t *testing.T) {
 	require.NoError(t, getErr)
 	assert.Equal(t, StateFailed, rec.State)
 	assert.Contains(t, rec.Reason, "release the writers")
+}
+
+// TestAForkRetriesTheReleaseOnceBeforeGivingUp pins the retry the resumed channel needs: a
+// restore loses roughly one request in three (Firecracker documents the packet loss), and a
+// thaw is one request. A clone whose release succeeded on a retry is ready; one that never
+// succeeds is not, and the error carries the last attempt.
+func TestAForkRetriesTheReleaseOnceBeforeGivingUp(t *testing.T) {
+	releaseWith := func(t *testing.T, failures int, timeout time.Duration) (*Record, error) {
+		t.Helper()
+		c := newCheckpointFixture(t)
+		stubQuiesce(t, nil)
+		c.readySandbox(t, "parent")
+		_, err := c.manager.Checkpoint(context.Background(), "parent", "c1")
+		require.NoError(t, err)
+
+		original := askGuestToQuiesce
+		refusals := 0
+		askGuestToQuiesce = func(_ context.Context, _ Record, action string) (agent.QuiesceReport, error) {
+			if action == agent.QuiesceThaw && refusals < failures {
+				refusals++
+				return agent.QuiesceReport{}, &agent.Error{Code: agent.CodeInternal, Message: "a lost packet"}
+			}
+			return agent.QuiesceReport{Action: action, Mode: agent.QuiesceModeFreeze, Mounts: []string{"/"}}, nil
+		}
+		t.Cleanup(func() { askGuestToQuiesce = original })
+
+		ctx := context.Background()
+		if timeout > 0 {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, timeout)
+			t.Cleanup(cancel)
+		}
+		forks, err := c.manager.Fork(ctx, ForkRequest{Checkpoint: "c1"})
+		if err != nil {
+			return nil, err
+		}
+		require.Len(t, forks, 1)
+		return &forks[0], nil
+	}
+
+	// One lost packet: the launch retries and the clone is ready.
+	ready, err := releaseWith(t, 1, 0)
+	require.NoError(t, err)
+	require.NotNil(t, ready)
+	assert.Equal(t, StateReady, ready.State)
+
+	// A release that never succeeds fails the fork, with the last attempt in the error.
+	// A release that never succeeds: the request's own budget ends the retries, and the
+	// error carries the attempt that was last refused.
+	_, err = releaseWith(t, 1000, 1500*time.Millisecond)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "release the writers")
+	assert.Contains(t, err.Error(), "a lost packet")
 }

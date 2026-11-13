@@ -760,19 +760,12 @@ func (m *Manager) buildFork(ctx context.Context, rec *Record, chk CheckpointReco
 	// A clone whose writers are still blocked is not a usable sandbox, so a release that
 	// fails fails the launch — except on a guest that does not implement quiesce, which
 	// cannot have been frozen and is not being asked to release anything.
-	released, err := m.quiesce(ctx, *rec, agent.QuiesceThaw)
-	if err != nil {
-		if isUnsupportedOp(err) {
-			log.Info().Str("sandbox_id", rec.ID).
-				Msg("Clone resumed from a checkpoint its guest could not have frozen: no release to make")
-		} else {
-			return fmt.Errorf("sandbox %s: release the writers its checkpoint froze: %w", rec.ID, err)
+	if _, err := m.releaseClone(ctx, *rec); err != nil {
+		if !isUnsupportedOp(err) {
+			return fmt.Errorf("sandbox %s: %w", rec.ID, err)
 		}
-	} else {
-		log.Info().
-			Str("sandbox_id", rec.ID).
-			Str("mounts", strings.Join(released.Mounts, ",")).
-			Msg("Clone's writers released after its resume")
+		log.Info().Str("sandbox_id", rec.ID).
+			Msg("Clone resumed from a checkpoint its guest could not have frozen: no release to make")
 	}
 	return m.markReady(rec, a, launched)
 }
@@ -813,6 +806,48 @@ func (m *Manager) allocateCheckpointName(requested string) (string, error) {
 		return "", fmt.Errorf("%w: checkpoint %s", ErrExists, name)
 	}
 	return name, nil
+}
+
+// releaseRetryPause is the pause between two attempts at releasing a resumed clone's
+// writers. It is the pause the guest's own metadata read uses (pkg/agent's mmdsReadBackoff),
+// because it is the same cause: Firecracker documents that packet loss can be expected from
+// guests resumed from a snapshot in another process, and measured on this host a restore
+// loses roughly one request in three. A thaw is exactly one request on that channel, so a
+// release that gave up on the first lost packet would fail a healthy clone about a third of
+// the time — and the failure would be indistinguishable from a guest that is really frozen.
+const releaseRetryPause = 250 * time.Millisecond
+
+// releaseClone releases the freeze a checkpoint's image carried, retrying while the request's
+// own budget allows. The budget is the caller's context, not a number here, so a launch with
+// a longer window retries for longer and one with a shorter window gives up sooner.
+//
+// A guest that does not implement quiesce is not retried: it cannot have been frozen, and
+// repeating the question would only delay the answer.
+func (m *Manager) releaseClone(ctx context.Context, rec Record) (agent.QuiesceReport, error) {
+	var lastErr error
+	for attempt := 1; ; attempt++ {
+		report, err := m.quiesce(ctx, rec, agent.QuiesceThaw)
+		if err == nil {
+			log.Info().
+				Str("sandbox_id", rec.ID).
+				Str("mounts", strings.Join(report.Mounts, ",")).
+				Int("attempt", attempt).
+				Msg("Clone's writers released after its resume")
+			return report, nil
+		}
+		if isUnsupportedOp(err) {
+			return agent.QuiesceReport{}, err
+		}
+		lastErr = err
+
+		select {
+		case <-ctx.Done():
+			return agent.QuiesceReport{}, fmt.Errorf(
+				"release the writers its checkpoint froze: gave up after %d attempts: %w: %w",
+				attempt, ctx.Err(), lastErr)
+		case <-time.After(releaseRetryPause):
+		}
+	}
 }
 
 // isUnsupportedOp reports whether a guest refused an operation because it does not
