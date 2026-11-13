@@ -456,7 +456,12 @@ func (m *Manager) launch(ctx context.Context, rec *Record, tmpl template, size s
 			HostTap:  a.network.Tap,
 			GuestMAC: a.network.MAC,
 		}},
-		Identity: m.identity(rec.ID, a.network, a.token),
+		// No token in the identity: this guest's credential was written into its disk before
+		// it booted, so `prepare` has nothing to rotate and must not be asked to. Sending
+		// the same value would make the launch depend on the guest and the host disagreeing
+		// about a trailing newline (agent.InjectToken writes one without, the applier
+		// compares against one with) — a launch that fails the moment either side is tidied.
+		Identity: m.identity(rec.ID, a.network, ""),
 		Record:   vminstanceRecord(rec, a, owner),
 	})
 }

@@ -702,3 +702,80 @@ func TestForkLaunchesOnTheCheckpointsVsockPath(t *testing.T) {
 	assert.Equal(t, c.launcher.requests[0].VsockPath, c.launcher.requests[1].VsockPath)
 	assert.NotEqual(t, forks[0].ID, forks[1].ID)
 }
+
+// TestAForkGivesEachCloneItsOwnCredential pins the fourth frozen identity: the image carries
+// the parent's agent token, so a clone must be handed a new one — a token the guest already
+// holds leaves `prepare` nothing to rotate, and the launch fails its adoption check. Two
+// clones must not end up with one credential between them either.
+func TestAForkGivesEachCloneItsOwnCredential(t *testing.T) {
+	c := newCheckpointFixture(t)
+	stubQuiesce(t, nil)
+	c.readySandbox(t, "parent")
+
+	chk, err := c.manager.Checkpoint(context.Background(), "parent", "c1")
+	require.NoError(t, err)
+	require.NotEmpty(t, chk.Token)
+
+	forks, err := c.manager.Fork(context.Background(), ForkRequest{Checkpoint: "c1", Count: 2})
+	require.NoError(t, err)
+	require.Len(t, forks, 2)
+
+	seen := map[string]bool{}
+	for _, rec := range forks {
+		require.NotEmpty(t, rec.AgentTokenFile)
+		token, found, readErr := agent.ReadTokenFile(rec.AgentTokenFile)
+		require.NoError(t, readErr)
+		require.True(t, found, "the clone's own credential is on the host, beside its muxer")
+		assert.NotEqual(t, chk.Token, token, "a clone must not keep the credential its image carried")
+		assert.False(t, seen[token], "two clones, two credentials")
+		seen[token] = true
+
+		// And the identity the launcher was given carried it: that is what `prepare`
+		// rotates to, and what the guest must end up holding.
+		var launched identityFor
+		for _, request := range c.launcher.requests {
+			if request.InstanceID == rec.ID {
+				launched = identityFor{token: request.Identity.Token}
+			}
+		}
+		assert.Equal(t, token, launched.token)
+	}
+}
+
+// identityFor is just the field these assertions read, so the loop above stays readable.
+type identityFor struct{ token string }
+
+// TestTheThawAfterAForkDialsWithTheClonesCredential pins the ordering that makes "ready"
+// honest: the host's copy of the clone's credential is written before anything dials with
+// it, so the release that runs before markReady is a real authenticated call rather than
+// one whose failure is logged as a warning while the sandbox reports ready.
+func TestTheThawAfterAForkDialsWithTheClonesCredential(t *testing.T) {
+	c := newCheckpointFixture(t)
+	c.readySandbox(t, "parent")
+
+	// The stub records what the dial would have presented: the token file beside the muxer
+	// at the moment of each call.
+	type call struct {
+		action string
+		token  string
+	}
+	var calls []call
+	original := askGuestToQuiesce
+	askGuestToQuiesce = func(_ context.Context, rec Record, action string) (agent.QuiesceReport, error) {
+		token, _, _ := agent.ReadTokenFile(rec.AgentTokenFile)
+		calls = append(calls, call{action: action, token: token})
+		return agent.QuiesceReport{Action: action, Mode: agent.QuiesceModeFreeze, Mounts: []string{"/"}}, nil
+	}
+	t.Cleanup(func() { askGuestToQuiesce = original })
+
+	chk, err := c.manager.Checkpoint(context.Background(), "parent", "c1")
+	require.NoError(t, err)
+	_, err = c.manager.Fork(context.Background(), ForkRequest{Checkpoint: "c1"})
+	require.NoError(t, err)
+
+	require.NotEmpty(t, calls)
+	thaw := calls[len(calls)-1]
+	assert.Equal(t, agent.QuiesceThaw, thaw.action)
+	assert.NotEmpty(t, thaw.token, "the release is authenticated: its token file exists when it dials")
+	assert.NotEqual(t, chk.Token, thaw.token, "and it presents the clone's credential, not the checkpoint's")
+}

@@ -672,6 +672,19 @@ func (m *Manager) newForkRecord(id string, chk CheckpointRecord, owner string, t
 // into the jail anyway; the host copy is what the record names and what a teardown frees,
 // so the checkpoint's file is never the thing a sandbox owns.
 func (m *Manager) buildFork(ctx context.Context, rec *Record, chk CheckpointRecord, staged stagedImages) error {
+	// Two credentials, and they are not the same one. The guest that resumes holds the
+	// token its image was frozen with, so that is what a dial to it must present until the
+	// post-restore hook has run — readiness and the hook itself depend on it. The clone's
+	// own credential is minted here and handed to the hook through MMDS: an identity whose
+	// token the guest already holds is one `prepare` sees nothing to do for, and the launch
+	// then fails the "did the guest adopt it" check. That is the same class of frozen
+	// identity as the MAC, the address and the vsock path: the host must know which value
+	// the image carries and which one is the clone's to make new.
+	cloneToken, err := agent.NewToken()
+	if err != nil {
+		return err
+	}
+
 	network, err := m.cfg.Network.Attach(ctx, rec.ID, rec.Egress)
 	if err != nil {
 		return err
@@ -707,19 +720,33 @@ func (m *Manager) buildFork(ctx context.Context, rec *Record, chk CheckpointReco
 		// The resumed guest's vsock device is the one frozen in the image, so the muxer
 		// appears at the checkpoint's path — inside this clone's own chroot, which is what
 		// makes the string shared and the socket private.
-		VsockPath:  chk.VsockPath,
+		VsockPath: chk.VsockPath,
+		// What the resumed guest accepts, which is the checkpoint's credential: the clone's
+		// own does not exist inside it yet.
 		AgentToken: chk.Token,
 		Net: []snapshot.NetworkInterface{{
 			IfaceID:  ifaceID,
 			HostTap:  network.Tap,
 			GuestMAC: network.MAC,
 		}},
-		Identity: m.identity(rec.ID, network, chk.Token),
+		Identity: m.identity(rec.ID, network, cloneToken),
 		Record:   vminstanceRecord(rec, a, ""),
 	})
 	if err != nil {
 		return fmt.Errorf("sandbox %s: resume checkpoint %s: %w", rec.ID, chk.Name, err)
 	}
+
+	// The host's copy of the clone's own credential, written before anything dials with it:
+	// the hook dials, the readiness dial and this release all read the token beside the
+	// muxer, and the checkpoint's copy is the parent's. It goes in before the release so the
+	// release is a real call with the clone's token rather than an unauthenticated one whose
+	// failure a warning would hide. markReady then records this file as the sandbox's.
+	cloneTokenFile := agent.TokenFilePath(launched.VsockPath)
+	if err := agent.WriteTokenFile(cloneTokenFile, cloneToken); err != nil {
+		return fmt.Errorf("sandbox %s: publish its own agent token: %w", rec.ID, err)
+	}
+	rec.AgentTokenFile = cloneTokenFile
+	a.token = cloneToken
 
 	// The clone's guest released the freeze its image carried when its post-restore hook
 	// ran, and this is the same release asked for directly: "ready" has to mean the

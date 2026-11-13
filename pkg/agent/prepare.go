@@ -132,6 +132,11 @@ type Identity struct {
 	// clone, because the token frozen in the checkpoint's disk is the token of
 	// the machine the checkpoint came from: every clone that kept it would
 	// authenticate with the same credential.
+	// Token is a credential the guest must adopt, and it must be one the guest does not
+	// already hold: the hook applies an identity by difference, so a token already in the
+	// guest's file leaves nothing to rotate and the launch fails its "did the guest adopt
+	// it" check. Empty means nothing to rotate, which is what a cold boot sends — its
+	// credential was injected into the disk before the guest started.
 	Token string `json:"token,omitempty"`
 	// Entropy is freshly minted bytes, hex encoded, mixed into the kernel's
 	// entropy pool. A restored guest's pool is a copy, so without this every
