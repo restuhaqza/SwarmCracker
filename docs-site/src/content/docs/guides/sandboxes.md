@@ -222,7 +222,109 @@ so a credential never outlives what it authenticates.
 
 The scopes are `sandboxes:read` (reader and up), `sandboxes:exec` (runner and up),
 `sandboxes:write` (operator and up, for create and remove) and `sandboxes:token`
-(admin only: issuing a credential is administrative work).
+(admin only: issuing a credential is administrative work). Checkpoints add a fifth,
+`sandboxes:checkpoints` (operator and up), which covers taking, listing, forking and
+removing them — see [Checkpoints and forks](#checkpoints-and-forks).
+
+## Checkpoints and forks
+
+A checkpoint is a sandbox's memory and disk, stored under a name, that a fork resumes.
+Taking one needs a **ready** sandbox, and it is taken with the guest's writers stopped:
+the guest receives `quiesce freeze`, freezes its filesystems, the images are copied, and
+the guest thaws.
+
+```bash
+sudo swarmcracker sandbox checkpoint create d22a0d18ff5f before-upgrade
+swarmcracker sandbox checkpoint ls            # every checkpoint on the node
+swarmcracker sandbox checkpoint inspect before-upgrade
+```
+
+The name is the caller's to choose, because it is the only handle the image has later: a
+sandbox does not have to exist for its checkpoint to be listed, forked or freed.
+
+### What `fsfreeze` does and does not stop
+
+`quiesce freeze` runs `sync` and then `FIFREEZE` on every **writable, block-device-backed**
+mount — on the reference templates that is `/`, the ext4 root disk. What that leaves out
+is deliberate and worth knowing before you rely on a checkpoint:
+
+- **`tmpfs` and `/dev/shm` are not frozen.** Their contents are frozen by the VM pause
+  that precedes the memory snapshot, but they are memory, not disk: they are captured
+  as they were at the pause, not synced to a stable state first. State you care about
+  belongs on the root disk.
+- **An overlayfs upper layer is not frozen.** `FIFREEZE` applies to the filesystem a mount
+  is backed by; an overlay's upper layer is reached through the overlay, and the freeze
+  is refused there. A template whose root is an overlay gets no writer stop at all —
+  check `sandbox checkpoint inspect <name>`, whose `quiesceMounts` lists what was
+  actually frozen. If that list does not include the filesystem your data is on, the
+  checkpoint's consistency on it is unknown.
+- **A guest agent that does not implement `quiesce`** cannot be checkpointed safely. That
+  is refused **per call**, with `details.reason` naming the capability the template's
+  agent lacks, rather than `template_incompatible` and rather than quietly taking an
+  image whose writers were running. Rebuild the template from a recipe whose agent
+  advertises `quiesce` (`recipes/sandbox-{base,python,node}.yaml` all do).
+
+Freezing stops the guest's writers for as long as the copy takes, so a checkpoint of a
+sandbox with a 512 MB memory image pauses it for the duration of the memory write. The
+sandbox resumes when the copy finishes; it is not restarted, and its disk is not
+replaced.
+
+### Fork
+
+```bash
+# Clone what a running sandbox is doing right now: the node takes the checkpoint for you.
+swarmcracker sandbox fork d22a0d18ff5f --count 2
+
+# Clone a checkpoint you already have; its sandbox need not exist.
+swarmcracker sandbox fork --checkpoint before-upgrade
+```
+
+```text
+ID              STATE  GUEST IP     TEMPLATE
+5da74f0e06da    ready  10.63.0.3    sandbox-base@1.0.0
+057f62e6e3c9    ready  10.63.0.4    sandbox-base@1.0.0
+
+checkpoint d22a0d18ff5f-fork-1729 holds the image these were forked from.
+Free it with `swarmcracker sandbox checkpoint rm d22a0d18ff5f-fork-1729` once no more clones are needed.
+```
+
+A fork of a running sandbox **mints** its checkpoint, so the response names it: a fork
+that always left an image behind would leak one per call if the caller could not find it
+to delete.
+
+Each clone is a separate sandbox, not a second view of one: its own copy of the disk, its
+own network namespace with its own MAC and IP, its own idle TTL, and its own guest-agent
+credential. The two identities a clone must *not* inherit are the ones the image froze in
+place — the MAC, the IP, and the vsock path the muxer listens on — and the two it must be
+given fresh are its network and its credential. A clone whose guest still holds the
+checkpoint's credential would have nothing to rotate, so the host mints one per clone,
+writes it beside the clone's own muxer, and the guest adopts it in the same `prepare` that
+releases the freeze.
+
+### Removing a checkpoint
+
+```bash
+swarmcracker sandbox checkpoint rm before-upgrade
+```
+
+```text
+before-upgrade removed
+  freed:  0 B (state 23.5 KB, disk 2.0 GB, memory chunks 0 B in 0 chunks)
+  retained: 512.0 MB referenced by 1 checkpoint(s), counted once per reference and not deduplicated
+```
+
+A checkpoint's memory image is stored as 4 MiB chunks shared with every other checkpoint
+of the same sandbox, so removing one of two forks frees its state document and its disk
+copy but only the chunks the other does not use. The response separates the two:
+`freed.freedBytes` is what came back, `freed.retainedBytes` is what the remaining
+checkpoints still reference — **once per referencing checkpoint, not deduplicated**, so it
+is a measure of what is referenced rather than of physical disk. `--json` prints that
+document whole.
+
+Forgetting a checkpoint does not stop the sandboxes forked from it; they have their own
+disk and their own memory. Chunks nothing references are freed with the checkpoint that
+last referenced them, and a daemon start sweeps the chunks a crashed checkpoint left
+unnamed.
 
 ## API
 
@@ -237,6 +339,21 @@ The control plane is served on the node's v1 API. The routes are documented in
 | `DELETE /v1/sandboxes/{id}` | `sandboxes:write` + the sandbox selector |
 | `POST /v1/sandboxes/{id}/exec` | `sandboxes:exec` + the sandbox selector |
 | `POST /v1/sandboxes/{id}/tokens` | `sandboxes:token` + the sandbox selector |
+| `POST /v1/sandboxes/{id}/checkpoints` | `sandboxes:checkpoints` + the sandbox selector |
+| `GET /v1/sandboxes/{id}/checkpoints` | `sandboxes:checkpoints` + the sandbox selector |
+| `POST /v1/sandboxes/{id}/checkpoints/{name}/restore` | `sandboxes:checkpoints` + the sandbox selector |
+| `POST /v1/sandboxes/{id}/fork` | `sandboxes:checkpoints` + the sandbox selector |
+| `GET /v1/checkpoints` | `sandboxes:checkpoints` |
+| `GET /v1/checkpoints/{name}` | `sandboxes:checkpoints` |
+| `DELETE /v1/checkpoints/{name}` | `sandboxes:checkpoints` |
+| `POST /v1/checkpoints/{name}/fork` | `sandboxes:checkpoints` |
+
+A checkpoint's name is unique on the node, which is why the four `/v1/checkpoints`
+routes are node-scoped: a checkpoint outlives its sandbox, and once the sandbox is gone
+those routes are the only names left that can find the image. A sandbox-scoped route asked
+about a checkpoint of **another** sandbox answers `404`, not `403`: that route's resource
+is the checkpoint of that sandbox, and it does not exist there. `sandboxes:checkpoints` is
+an operator scope.
 
 Exec is the same `application/x-ndjson` stream, frame for frame, as
 `POST /v1/tasks/{id}/exec`, and it is produced by the same handler. The version
