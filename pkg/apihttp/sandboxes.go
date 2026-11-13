@@ -138,10 +138,19 @@ func (s *Server) createSandbox(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		s.recordSandboxAudit(r, "sandbox.create", req.ID, "error")
+		// A create that got far enough to write a record leaves it failed with the
+		// reason; that record is a sandbox that exists and is unusable, which is what
+		// a watcher needs to see. A create refused before the record existed — a
+		// quota, a template this host cannot boot — leaves nothing, so there is
+		// nothing to announce.
+		if rec.ID != "" && rec.State == sandbox.StateFailed {
+			s.publishSandboxEvent(v1.EventTypeSandboxFailed, rec)
+		}
 		s.writeError(w, r, sandboxAPIError(err))
 		return
 	}
 	s.recordSandboxAudit(r, "sandbox.create", rec.ID, "ok")
+	s.publishSandboxEvent(v1.EventTypeSandboxCreated, rec)
 
 	// 201 with the document: the sandbox exists and is ready (the create returns only
 	// once the guest agent answered), which is what the status says.
@@ -183,6 +192,11 @@ func (s *Server) removeSandbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.recordSandboxAudit(r, "sandbox.remove", id, "ok")
+	// The event names the sandbox that was removed. It carries no object: the record is
+	// deleted by the time this runs, and a sandbox's id is its whole identity — it has no
+	// name and no labels — so there is nothing a watcher could learn from a document it
+	// could no longer read back.
+	s.publishSandboxRemoval(id)
 	s.writeJSON(w, r, http.StatusOK, v1.NewSandboxRemoval(id, sandboxFreedDocument(freed)))
 }
 
@@ -676,6 +690,10 @@ func (s *Server) fork(w http.ResponseWriter, r *http.Request, run func(sandbox.F
 	items := make([]v1.Sandbox, 0, len(forks))
 	for _, rec := range forks {
 		items = append(items, sandboxDocument(rec))
+		// A clone is a sandbox that was created, so it announces itself as one: a
+		// separate `sandbox.forked` type would make a consumer that watches sandboxes
+		// appear handle two types for the same fact.
+		s.publishSandboxEvent(v1.EventTypeSandboxCreated, rec)
 	}
 	doc := v1.NewSandboxList(items)
 	// A fork's checkpoint is part of its answer: the fork routes take (or name) an image,

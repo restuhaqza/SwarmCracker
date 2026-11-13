@@ -3266,10 +3266,21 @@ paths:
         events:read. An expired cursor is 410 cursor_expired with details.action
         "relist". Heartbeat comments are sent every 15 seconds on SSE.
         manager-local v1.
+        Events also come from the node that serves them: a sandbox created,
+        failed or removed through this node's API is streamed as
+        `sandbox.created`, `sandbox.failed` or `sandbox.removed`, selectable
+        with `types=sandbox`. A sandbox is not a SwarmKit object, so nothing
+        watches it: those events carry no cursor (`cursor` is empty) and are
+        live-only — a watcher receives them as they happen, and `since` does not
+        resume across them. A fork's clones are `sandbox.created` too, one event
+        per clone.
       parameters:
         - name: types
           in: query
-          description: Comma-separated resource types.
+          description: >-
+            Comma-separated resource types: the cluster's service, task, node,
+            network, config and secret, plus sandbox for this node's own sandbox
+            events. Omitting it streams every type.
           schema:
             type: string
             example: service,task,node
@@ -4697,7 +4708,11 @@ components:
       type: object
       required: [kind, id]
       properties:
-        kind: { type: string }
+        kind:
+          type: string
+          description: >-
+            The resource's kind: Service, Task, Node, Network, Config, Secret or
+            Sandbox.
         id: { type: string }
         name: { type: string }
     Event:
@@ -4706,11 +4721,16 @@ components:
       properties:
         schemaVersion: { type: integer, enum: [1] }
         kind: { type: string, enum: [Event] }
-        cursor: { type: string }
+        cursor:
+          type: string
+          description: >-
+            The watch batch boundary of a cluster event; every event in one
+            batch shares it. Empty for a node-local event (a sandbox change),
+            which is live-only and cannot be resumed from.
         at: { type: string, format: date-time }
         type:
           type: string
-          description: "<resource>.<created|updated|removed>"
+          description: "<resource>.<created|updated|removed|failed>"
         resource: { $ref: "#/components/schemas/EventResource" }
         revision: { type: string }
         changed:

@@ -182,9 +182,10 @@ export interface ErrorDocument {
 export interface Event {
   schemaVersion: 1;
   kind: "Event";
+  /** The watch batch boundary of a cluster event; every event in one batch shares it. Empty for a node-local event (a sandbox change), which is live-only and cannot be resumed from. */
   cursor: string;
   at?: string;
-  /** <resource>.<created|updated|removed> */
+  /** <resource>.<created|updated|removed|failed> */
   type: string;
   resource: EventResource;
   revision?: string;
@@ -194,6 +195,7 @@ export interface Event {
 }
 
 export interface EventResource {
+  /** The resource's kind: Service, Task, Node, Network, Config, Secret or Sandbox. */
   kind: string;
   id: string;
   name?: string;

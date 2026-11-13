@@ -639,7 +639,8 @@ with a `ready` frame and then emits one event per change:
  "revision":"18"}
 ```
 
-- `types` is a comma-separated subset of `service,task,node,network,config,secret`.
+- `types` is a comma-separated subset of `service,task,node,network,config,secret`,
+  plus `sandbox` for the node's own sandbox events (see below).
 - `since` (or `Last-Event-ID`) is the cursor to resume from. A cursor older than
   the retained watch log is `410 cursor_expired` with `details.action: "relist"`.
 - `label=k` / `label=k=v` filters events by resource labels.
@@ -651,6 +652,22 @@ with a `ready` frame and then emits one event per change:
   dedupe by resource + revision, not by cursor alone.
 - The stream requires `events:read`. The actor and changed-path fields are
   gateway-observed/optional in this phase; they are omitted when unavailable.
+
+A node that serves sandboxes also streams its own `sandbox.*` events on this
+route, selected with `types=sandbox`:
+
+- `sandbox.created` — a sandbox this node's API created, and each clone a fork
+  made; `sandbox.failed` — a create that left a failed record behind;
+  `sandbox.removed` — a sandbox an API call ended.
+- A sandbox is not a SwarmKit object, so nothing watches it for the API: a
+  sandbox event carries an empty `cursor` and is live-only. `since` does not
+  resume across one, and a watcher that connects after a change does not receive
+  it. Dedupe by `resource.id`.
+- `include=object` embeds the sandbox document, except on a removal, whose event
+  carries only the id (the record is gone by then, and a sandbox's id is its
+  whole identity).
+- A removal the reaper performs is not on this stream: it happens in the node's
+  own loop rather than in an API call.
 
 ### Task exec, attach, logs, files and health
 

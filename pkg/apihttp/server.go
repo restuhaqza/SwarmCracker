@@ -130,6 +130,13 @@ type Config struct {
 	// and keeps the capability out of the version document: a node that runs no
 	// sandboxes must not advertise that it does.
 	Sandboxes Sandboxes
+	// SandboxEvents is the bus the sandbox routes publish their changes to and
+	// GET /v1/events subscribes to (sandbox_events.go). It is optional: New installs
+	// an empty one, so a route always has somewhere to publish and a stream always
+	// has something to read. It is separate from Sandboxes because the two answer
+	// different questions: whether a control plane exists, and where its changes
+	// are announced.
+	SandboxEvents *SandboxEvents
 	// Audit is the manager-local audit log. It is optional: a nil store makes
 	// recordAudit a no-op and GET /v1/audit answer 501.
 	Audit *AuditStore
@@ -202,6 +209,12 @@ func New(cfg Config) (*Server, error) {
 	// POST with an Idempotency-Key is never silently unprotected.
 	if cfg.Idempotency == nil {
 		cfg.Idempotency = NewIdempotencyStore(DefaultIdempotencyTTL)
+	}
+	// Likewise the sandbox bus: a route publishes without checking whether anyone
+	// is listening, and a stream subscribes without checking whether a route ever
+	// publishes.
+	if cfg.SandboxEvents == nil {
+		cfg.SandboxEvents = NewSandboxEvents()
 	}
 
 	s := &Server{cfg: cfg, mux: http.NewServeMux()}
