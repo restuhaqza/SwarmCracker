@@ -35,6 +35,9 @@ type fakeSnapshots struct {
 	created  []string
 	deleted  []string
 	err      error
+	// omitDisk makes the working copy name a disk it never wrote: the publication
+	// failure a checkpoint meets when the snapshot manager's copy is gone.
+	omitDisk bool
 }
 
 func (f *fakeSnapshots) CreateSnapshot(_ context.Context, instanceID, socketPath string, opts snapshot.CreateOptions) (*snapshot.SnapshotInfo, error) {
@@ -58,7 +61,10 @@ func (f *fakeSnapshots) CreateSnapshot(_ context.Context, instanceID, socketPath
 			return nil, err
 		}
 	}
-	if opts.RootfsPath != "" {
+	if f.omitDisk {
+		disk = filepath.Join(dir, "absent.ext4")
+	}
+	if opts.RootfsPath != "" && !f.omitDisk {
 		source, err := os.ReadFile(opts.RootfsPath)
 		if err != nil {
 			return nil, err
@@ -613,22 +619,21 @@ func TestReconcileReclaimsChunksNoCheckpointNames(t *testing.T) {
 func TestAFailedCheckpointLeavesNoChunkBehind(t *testing.T) {
 	c := newCheckpointFixture(t)
 	stubQuiesce(t, nil)
-	rec := c.readySandbox(t, "sbx-1")
+	c.readySandbox(t, "sbx-1")
 
 	_, err := c.manager.Checkpoint(context.Background(), "sbx-1", "good")
 	require.NoError(t, err)
 	baseline := chunkFiles(t, c.blobs.Root())
 	require.NotZero(t, baseline)
 
-	// The sandbox's credential is read after its images are written, so a token file that
-	// cannot be read fails the checkpoint exactly where a real publication failure would:
-	// chunks written, record not yet published.
-	require.NoError(t, os.Remove(rec.AgentTokenFile))
-	require.NoError(t, os.MkdirAll(filepath.Join(rec.AgentTokenFile, "held"), 0o700))
+	// The snapshot manager's working copy names a disk it never wrote: the publication
+	// fails after the memory image is stored and before the record exists, which is the
+	// window a crash-free failure opens and a restart would only paper over.
+	c.snapshots.omitDisk = true
 
 	_, err = c.manager.Checkpoint(context.Background(), "sbx-1", "failed")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "agent token")
+	assert.Contains(t, err.Error(), "disk copy")
 
 	assert.Equal(t, baseline, chunkFiles(t, c.blobs.Root()),
 		"a checkpoint that failed publishes no chunk of its own")
@@ -646,4 +651,23 @@ func TestAFailedCheckpointLeavesNoChunkBehind(t *testing.T) {
 	forks, err := c.manager.Fork(context.Background(), ForkRequest{Checkpoint: "good"})
 	require.NoError(t, err)
 	assert.Len(t, forks, 1)
+}
+
+// TestCheckpointReadsTheCredentialBeforeTheImages pins both halves of the ordering: the
+// record must carry the token the image's guest holds, so it is read before the images are
+// taken (a rotation or rewrite in between would otherwise leave the record naming a
+// credential the image never had) — and a sandbox without a usable one fails before it
+// spends a gigabyte of images rather than after.
+func TestCheckpointReadsTheCredentialBeforeTheImages(t *testing.T) {
+	c := newCheckpointFixture(t)
+	stubQuiesce(t, nil)
+	rec := c.readySandbox(t, "sbx-1")
+
+	// A credential that cannot be read at all: the checkpoint must not reach the snapshot.
+	require.NoError(t, os.Remove(rec.AgentTokenFile))
+	_, err := c.manager.Checkpoint(context.Background(), "sbx-1", "c1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "agent token")
+	assert.Empty(t, c.snapshots.created, "the images are not taken for a sandbox with no credential")
+	assert.Empty(t, c.network.attached)
 }

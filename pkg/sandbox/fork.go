@@ -107,6 +107,20 @@ func (m *Manager) Checkpoint(ctx context.Context, id, name string) (CheckpointRe
 		return CheckpointRecord{}, fmt.Errorf("sandbox %s: read this node's pin: %w", rec.ID, err)
 	}
 
+	// The guest's credential is read before the images are taken, and held here until the
+	// record is written. What the record must carry is the token the guest holds, and the
+	// guest that resumes is the one frozen inside the memory image: reading it afterwards
+	// would leave a window in which the credential moved (a rotation, a revoke, a rewrite)
+	// and the record would name one the image never had. It also fails a sandbox with no
+	// usable credential before it spends a gigabyte of images, rather than after.
+	token, found, err := agent.ReadTokenFile(rec.AgentTokenFile)
+	if err != nil {
+		return CheckpointRecord{}, fmt.Errorf("sandbox %s: read its guest agent token: %w", rec.ID, err)
+	}
+	if !found {
+		return CheckpointRecord{}, fmt.Errorf("%w: sandbox %s has no agent token to carry", ErrNotReady, rec.ID)
+	}
+
 	// Freeze before the images are taken, and release on every path out: a guest left
 	// frozen has no writers and no way to get them back.
 	frozen, err := m.quiesce(ctx, rec, agent.QuiesceFreeze)
@@ -126,7 +140,7 @@ func (m *Manager) Checkpoint(ctx context.Context, id, name string) (CheckpointRe
 		return CheckpointRecord{}, fmt.Errorf("sandbox %s: take its checkpoint: %w", rec.ID, err)
 	}
 
-	chk, err := m.publishCheckpoint(ctx, rec, name, frozen, pin, info)
+	chk, err := m.publishCheckpoint(ctx, rec, name, frozen, pin, token, info)
 	if err != nil {
 		// The snapshot's own copy is the snapshot manager's to free until a checkpoint
 		// record names it; a checkpoint that could not be published owns nothing.
@@ -147,7 +161,7 @@ func (m *Manager) Checkpoint(ctx context.Context, id, name string) (CheckpointRe
 // image becomes D11 chunks, and the record that names all of it is written last.
 func (m *Manager) publishCheckpoint(
 	ctx context.Context, rec Record, name string, frozen agent.QuiesceReport,
-	pin checkpoint.Pin, info *snapshot.SnapshotInfo,
+	pin checkpoint.Pin, token string, info *snapshot.SnapshotInfo,
 ) (CheckpointRecord, error) {
 	dir := m.cfg.Checkpoints.Path(name)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -165,18 +179,11 @@ func (m *Manager) publishCheckpoint(
 		}
 	}()
 
-	statePath := filepath.Join(dir, "vm.state")
-	if err := moveFile(info.StatePath, statePath); err != nil {
-		return CheckpointRecord{}, fmt.Errorf("checkpoint %q: keep its state document: %w", name, err)
-	}
-	diskPath := filepath.Join(dir, "disk.ext4")
-	if err := moveFile(info.DiskPath, diskPath); err != nil {
-		return CheckpointRecord{}, fmt.Errorf("checkpoint %q: keep its disk copy: %w", name, err)
-	}
-
 	// The memory image, in the format D11 fixes: 4 MiB content-addressed chunks with a
-	// manifest of their digests and this node's pins.
-	state, err := os.Open(statePath)
+	// manifest of their digests and this node's pins. It is written from the snapshot's
+	// own copies, before they move: the store is the expensive part, and a failure in the
+	// moves that follow is cleaned up with the memory already accounted for.
+	state, err := os.Open(info.StatePath)
 	if err != nil {
 		return CheckpointRecord{}, fmt.Errorf("checkpoint %q: open its state document: %w", name, err)
 	}
@@ -191,15 +198,14 @@ func (m *Manager) publishCheckpoint(
 		return CheckpointRecord{}, fmt.Errorf("checkpoint %q: store its memory image: %w", name, err)
 	}
 
-	// The guest's credential goes into the record last, after the images: everything
-	// before this point is idempotent to redo, and a failure here is cleaned up by the
-	// deferred discard like any other.
-	token, found, err := agent.ReadTokenFile(rec.AgentTokenFile)
-	if err != nil {
-		return CheckpointRecord{}, fmt.Errorf("checkpoint %q: read the guest's agent token: %w", name, err)
+	// A checkpoint's own files, moved into its directory once the memory image is stored.
+	statePath := filepath.Join(dir, "vm.state")
+	if err := moveFile(info.StatePath, statePath); err != nil {
+		return CheckpointRecord{}, fmt.Errorf("checkpoint %q: keep its state document: %w", name, err)
 	}
-	if !found {
-		return CheckpointRecord{}, fmt.Errorf("checkpoint %q: the sandbox has no agent token to carry", name)
+	diskPath := filepath.Join(dir, "disk.ext4")
+	if err := moveFile(info.DiskPath, diskPath); err != nil {
+		return CheckpointRecord{}, fmt.Errorf("checkpoint %q: keep its disk copy: %w", name, err)
 	}
 
 	chk := CheckpointRecord{
