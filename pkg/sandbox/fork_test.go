@@ -806,11 +806,12 @@ func TestAForkWhoseReleaseFailsIsNotReady(t *testing.T) {
 	}
 	t.Cleanup(func() { askGuestToQuiesce = original })
 
-	// The request's own budget is what ends the retries: a clone whose release never
-	// succeeds is one the launch gives up on, not one it waits for for ever.
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	forks, err := c.manager.Fork(ctx, ForkRequest{Checkpoint: "c1", IDs: []string{"clone-1"}})
+	// The node's own budget is what ends the retries, not the caller's: the API sets no
+	// deadline on a handler, so a fork that relied on one would never answer a client that
+	// kept its connection open. The test shrinks that bound instead of supplying one, so
+	// what it proves is the bound production has.
+	shrinkReleaseBudget(t)
+	forks, err := c.manager.Fork(context.Background(), ForkRequest{Checkpoint: "c1", IDs: []string{"clone-1"}})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "release the writers")
 	assert.Empty(t, forks)
@@ -821,12 +822,24 @@ func TestAForkWhoseReleaseFailsIsNotReady(t *testing.T) {
 	assert.Contains(t, rec.Reason, "release the writers")
 }
 
+// shrinkReleaseBudget lowers the release's budget for one test, so a fork whose release never
+// succeeds finishes in a test rather than in thirty seconds. It is the production bound the
+// code applies; the test only makes it short enough to wait for.
+func shrinkReleaseBudget(t *testing.T) {
+	t.Helper()
+	original := releaseBudget
+	releaseBudget = 1500 * time.Millisecond
+	t.Cleanup(func() { releaseBudget = original })
+}
+
 // TestAForkRetriesTheReleaseOnceBeforeGivingUp pins the retry the resumed channel needs: a
 // restore loses roughly one request in three (Firecracker documents the packet loss), and a
 // thaw is one request. A clone whose release succeeded on a retry is ready; one that never
 // succeeds is not, and the error carries the last attempt.
 func TestAForkRetriesTheReleaseOnceBeforeGivingUp(t *testing.T) {
-	releaseWith := func(t *testing.T, failures int, timeout time.Duration) (*Record, error) {
+	shrinkReleaseBudget(t)
+
+	releaseWith := func(t *testing.T, failures int) (*Record, error) {
 		t.Helper()
 		c := newCheckpointFixture(t)
 		stubQuiesce(t, nil)
@@ -845,13 +858,7 @@ func TestAForkRetriesTheReleaseOnceBeforeGivingUp(t *testing.T) {
 		}
 		t.Cleanup(func() { askGuestToQuiesce = original })
 
-		ctx := context.Background()
-		if timeout > 0 {
-			var cancel context.CancelFunc
-			ctx, cancel = context.WithTimeout(ctx, timeout)
-			t.Cleanup(cancel)
-		}
-		forks, err := c.manager.Fork(ctx, ForkRequest{Checkpoint: "c1"})
+		forks, err := c.manager.Fork(context.Background(), ForkRequest{Checkpoint: "c1"})
 		if err != nil {
 			return nil, err
 		}
@@ -860,15 +867,15 @@ func TestAForkRetriesTheReleaseOnceBeforeGivingUp(t *testing.T) {
 	}
 
 	// One lost packet: the launch retries and the clone is ready.
-	ready, err := releaseWith(t, 1, 0)
+	ready, err := releaseWith(t, 1)
 	require.NoError(t, err)
 	require.NotNil(t, ready)
 	assert.Equal(t, StateReady, ready.State)
 
 	// A release that never succeeds fails the fork, with the last attempt in the error.
-	// A release that never succeeds: the request's own budget ends the retries, and the
-	// error carries the attempt that was last refused.
-	_, err = releaseWith(t, 1000, 1500*time.Millisecond)
+	// A release that never succeeds: the node's budget ends the retries, and the error
+	// carries the attempt that was last refused.
+	_, err = releaseWith(t, 1000)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "release the writers")
 	assert.Contains(t, err.Error(), "a lost packet")

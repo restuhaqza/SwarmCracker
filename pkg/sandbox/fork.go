@@ -817,13 +817,25 @@ func (m *Manager) allocateCheckpointName(requested string) (string, error) {
 // the time — and the failure would be indistinguishable from a guest that is really frozen.
 const releaseRetryPause = 250 * time.Millisecond
 
-// releaseClone releases the freeze a checkpoint's image carried, retrying while the request's
-// own budget allows. The budget is the caller's context, not a number here, so a launch with
-// a longer window retries for longer and one with a shorter window gives up sooner.
+// releaseBudget bounds how long the node keeps asking a guest to release the writers its
+// checkpoint froze. It is the same 30 s `release` gives a checkpoint's thaw, because it is
+// the same window: a sandbox that is mid-resume on a lossy channel.
+//
+// It is a variable rather than a constant only so a test can shrink it. The bound itself has
+// to live here: the API sets no deadline of its own on a handler, so a release that relied on
+// the caller's context would retry until the client hung up, and a fork whose clone could not
+// be released would never return an answer — the hang this retry exists to avoid.
+var releaseBudget = 30 * time.Second
+
+// releaseClone releases the freeze a checkpoint's image carried, retrying within the node's
+// own budget and never beyond the caller's, which is shorter when the caller asked for less.
 //
 // A guest that does not implement quiesce is not retried: it cannot have been frozen, and
 // repeating the question would only delay the answer.
 func (m *Manager) releaseClone(ctx context.Context, rec Record) (agent.QuiesceReport, error) {
+	ctx, cancel := context.WithTimeout(ctx, releaseBudget)
+	defer cancel()
+
 	var lastErr error
 	for attempt := 1; ; attempt++ {
 		report, err := m.quiesce(ctx, rec, agent.QuiesceThaw)
@@ -882,7 +894,7 @@ func (m *Manager) quiesce(ctx context.Context, rec Record, action string) (agent
 // report, not one the caller can act on.
 func (m *Manager) release(ctx context.Context, rec Record) {
 	// The guest may be mid-resume; give the release its own budget.
-	releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), releaseBudget)
 	defer cancel()
 
 	report, err := m.quiesce(releaseCtx, rec, agent.QuiesceThaw)
