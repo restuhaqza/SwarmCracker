@@ -21,7 +21,7 @@ func TestRoleScopes(t *testing.T) {
 		ScopeSecretsRead, ScopeSecretsWrite,
 		ScopeEventsRead, ScopeClusterRead,
 		ScopeTokensAdmin, ScopeAuditRead,
-		ScopeSandboxesRead, ScopeSandboxesWrite, ScopeSandboxesExec, ScopeSandboxesToken,
+		ScopeSandboxesRead, ScopeSandboxesWrite, ScopeSandboxesCheckpoints, ScopeSandboxesExec, ScopeSandboxesToken,
 	}
 
 	reader := []Scope{
@@ -32,7 +32,7 @@ func TestRoleScopes(t *testing.T) {
 	runner := append(append([]Scope{}, reader...), ScopeTasksExec, ScopeTasksFiles, ScopeTasksSnapshots, ScopeSandboxesExec)
 	operator := append(append([]Scope{}, runner...),
 		ScopeServicesWrite, ScopeNetworksWrite, ScopeConfigsWrite,
-		ScopeConfigsReadValues, ScopeSecretsWrite, ScopeSandboxesWrite)
+		ScopeConfigsReadValues, ScopeSecretsWrite, ScopeSandboxesWrite, ScopeSandboxesCheckpoints)
 
 	cases := []struct {
 		role string
@@ -87,7 +87,7 @@ func TestAdminHoldsEveryScope(t *testing.T) {
 		ScopeNodesWrite, ScopeNetworksRead, ScopeNetworksWrite, ScopeConfigsRead,
 		ScopeConfigsReadValues, ScopeConfigsWrite, ScopeSecretsRead, ScopeSecretsWrite,
 		ScopeEventsRead, ScopeClusterRead, ScopeTokensAdmin, ScopeAuditRead,
-		ScopeSandboxesRead, ScopeSandboxesWrite, ScopeSandboxesExec, ScopeSandboxesToken,
+		ScopeSandboxesRead, ScopeSandboxesWrite, ScopeSandboxesCheckpoints, ScopeSandboxesExec, ScopeSandboxesToken,
 	} {
 		assert.Contains(t, scopes, scope)
 	}

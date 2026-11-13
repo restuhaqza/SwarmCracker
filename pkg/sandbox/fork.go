@@ -258,6 +258,33 @@ func (m *Manager) Checkpoints(sandboxID string) ([]CheckpointRecord, []string, e
 	return out, skipped, nil
 }
 
+// CheckpointByName returns one checkpoint of this node, or says it is not there. It is
+// the read a fork route resolves its input with, and it does not care whether the
+// sandbox the checkpoint was taken from still exists: a checkpoint is an image.
+func (m *Manager) CheckpointByName(name string) (CheckpointRecord, error) {
+	if m.cfg.Checkpoints == nil {
+		return CheckpointRecord{}, fmt.Errorf("%w: this node keeps no sandbox checkpoints", ErrNotImplemented)
+	}
+	return m.checkpoint(name)
+}
+
+// DeleteCheckpoint forgets one checkpoint: its record, its state document and its disk
+// copy.
+//
+// The memory image's chunks are not deleted here, and that is deliberate: a chunk is
+// shared between checkpoints — two forks of one sandbox share almost every chunk — so no
+// single checkpoint may free one. pkg/checkpoint's Prune reclaims the chunks nothing
+// references any more, by age.
+func (m *Manager) DeleteCheckpoint(name string) error {
+	if m.cfg.Checkpoints == nil {
+		return fmt.Errorf("%w: this node keeps no sandbox checkpoints", ErrNotImplemented)
+	}
+	if _, err := m.checkpoint(name); err != nil {
+		return err
+	}
+	return m.cfg.Checkpoints.Delete(name)
+}
+
 // ForkRequest is what a caller asks for: the checkpoint to fork, and how many.
 type ForkRequest struct {
 	// Checkpoint names the checkpoint to resume. It may have been taken from a
@@ -275,6 +302,19 @@ type ForkRequest struct {
 	// must supply `Count` of them, because a fork that named some of its clones and
 	// minted others would be two rules in one call.
 	IDs []string
+}
+
+// ForkFromSandbox takes a fresh checkpoint of a running sandbox and forks it. It is the
+// one-step form of `checkpoint` then `fork`, for a caller that wants clones of what is
+// running now rather than of an image it named earlier; the checkpoint it takes is
+// recorded under a minted name and is visible in a listing like any other.
+func (m *Manager) ForkFromSandbox(ctx context.Context, sandboxID string, req ForkRequest) ([]Record, error) {
+	chk, err := m.Checkpoint(ctx, sandboxID, "")
+	if err != nil {
+		return nil, err
+	}
+	req.Checkpoint = chk.Name
+	return m.Fork(ctx, req)
 }
 
 // Fork creates new sandboxes from a checkpoint, and returns their records once each

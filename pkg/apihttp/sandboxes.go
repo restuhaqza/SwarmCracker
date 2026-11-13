@@ -50,6 +50,19 @@ type Sandboxes interface {
 	Create(ctx context.Context, req sandbox.CreateRequest) (sandbox.Record, error)
 	// Remove ends one sandbox and frees everything it holds.
 	Remove(ctx context.Context, id string) (sandbox.Freed, error)
+	// Checkpoint takes a consistent checkpoint of one sandbox under name.
+	Checkpoint(ctx context.Context, id, name string) (sandbox.CheckpointRecord, error)
+	// Checkpoints returns the node's checkpoints, narrowed to one sandbox when
+	// sandboxID is not empty, plus the records that could not be read.
+	Checkpoints(sandboxID string) ([]sandbox.CheckpointRecord, []string, error)
+	// CheckpointByName returns one checkpoint by its node-unique name.
+	CheckpointByName(name string) (sandbox.CheckpointRecord, error)
+	// DeleteCheckpoint forgets one checkpoint and the images it owns.
+	DeleteCheckpoint(name string) error
+	// Fork creates clones from a checkpoint.
+	Fork(ctx context.Context, req sandbox.ForkRequest) ([]sandbox.Record, error)
+	// ForkFromSandbox takes a fresh checkpoint of a running sandbox and forks it.
+	ForkFromSandbox(ctx context.Context, sandboxID string, req sandbox.ForkRequest) ([]sandbox.Record, error)
 	// ServeExec serves one streaming exec request against a sandbox. An error it
 	// returns is the pre-flight (no such sandbox, not ready); everything after the
 	// dial is written to w.
@@ -386,4 +399,245 @@ func sandboxAPIError(err error) error {
 	}
 
 	return err
+}
+
+// The checkpoint routes: taking an image of a sandbox, reading one, forking from one and
+// forgetting one.
+//
+// They are two families over one object. The sandbox-scoped routes (RFC §6) name the
+// sandbox a checkpoint belongs to, because that is how a caller reaches it while the
+// sandbox exists; the node-scoped routes address a checkpoint by its own name, because a
+// checkpoint outlives the sandbox it was taken from and `keepCheckpoint=true` on a
+// sandbox delete would otherwise leave images nothing could list, fork or free.
+//
+// A checkpoint's name is unique on the node, so a sandbox-scoped route that names a
+// checkpoint belonging to another sandbox answers 404: the caller asked about a resource
+// that is not there, not about one it may not touch — a 403 would confirm the name.
+
+// checkpointDocument maps a record to the wire document. Host layout stays on the node.
+func checkpointDocument(rec sandbox.CheckpointRecord) v1.Checkpoint {
+	return v1.Checkpoint{
+		Name:          rec.Name,
+		Sandbox:       rec.Sandbox,
+		Template:      rec.Template,
+		Kernel:        rec.Kernel,
+		CreatedAt:     formatInstant(rec.Created),
+		VCPUs:         rec.VCPUs,
+		MemoryMB:      rec.MemoryMB,
+		Egress:        rec.Egress,
+		QuiesceMode:   rec.Quiesce.Mode,
+		QuiesceMounts: rec.Quiesce.Mounts,
+		SizeBytes:     rec.SizeBytes,
+		AgentVersion:  rec.AgentVersion,
+		BootID:        rec.BootID,
+	}
+}
+
+// checkpointDocuments maps a list, and is where a listing's warnings are attached.
+func checkpointDocuments(records []sandbox.CheckpointRecord) []v1.Checkpoint {
+	out := make([]v1.Checkpoint, 0, len(records))
+	for _, rec := range records {
+		out = append(out, checkpointDocument(rec))
+	}
+	return out
+}
+
+// warningsForCheckpoints renders the record files a listing could not read.
+func warningsForCheckpoints(skipped []string) []v1.Warning {
+	warnings := make([]v1.Warning, 0, len(skipped))
+	for _, path := range skipped {
+		warnings = append(warnings, v1.Warning{
+			Code:    "checkpoint_record_unreadable",
+			Message: "a checkpoint record could not be read and is not listed",
+			Details: map[string]any{"file": filepath.Base(path)},
+		})
+	}
+	return warnings
+}
+
+// listCheckpoints serves GET /v1/checkpoints: every checkpoint on this node.
+func (s *Server) listCheckpoints(w http.ResponseWriter, r *http.Request) {
+	if !s.sandboxesAvailable(w, r) {
+		return
+	}
+	records, skipped, err := s.cfg.Sandboxes.Checkpoints("")
+	if err != nil {
+		s.writeError(w, r, sandboxAPIError(err))
+		return
+	}
+	doc := v1.NewCheckpointList(checkpointDocuments(records))
+	doc.Warnings = warningsForCheckpoints(skipped)
+	s.writeJSON(w, r, http.StatusOK, doc)
+}
+
+// getCheckpoint serves GET /v1/checkpoints/{name}.
+func (s *Server) getCheckpoint(w http.ResponseWriter, r *http.Request) {
+	if !s.sandboxesAvailable(w, r) {
+		return
+	}
+	rec, err := s.cfg.Sandboxes.CheckpointByName(r.PathValue("name"))
+	if err != nil {
+		s.writeError(w, r, sandboxAPIError(err))
+		return
+	}
+	s.writeJSON(w, r, http.StatusOK, v1.NewCheckpointDocument(checkpointDocument(rec)))
+}
+
+// forkFromCheckpoint serves POST /v1/checkpoints/{name}/fork: clones of an image, whether
+// or not the sandbox it came from still exists.
+func (s *Server) forkFromCheckpoint(w http.ResponseWriter, r *http.Request) {
+	if !s.sandboxesAvailable(w, r) {
+		return
+	}
+	name := r.PathValue("name")
+	if _, err := s.cfg.Sandboxes.CheckpointByName(name); err != nil {
+		s.writeError(w, r, sandboxAPIError(err))
+		return
+	}
+	s.fork(w, r, func(req sandbox.ForkRequest) ([]sandbox.Record, error) {
+		req.Checkpoint = name
+		return s.cfg.Sandboxes.Fork(r.Context(), req)
+	})
+}
+
+// deleteCheckpoint serves DELETE /v1/checkpoints/{name}.
+func (s *Server) deleteCheckpoint(w http.ResponseWriter, r *http.Request) {
+	if !s.sandboxesAvailable(w, r) {
+		return
+	}
+	name := r.PathValue("name")
+	if err := s.cfg.Sandboxes.DeleteCheckpoint(name); err != nil {
+		s.writeError(w, r, sandboxAPIError(err))
+		return
+	}
+	s.recordSandboxAudit(r, "checkpoint.delete", name, "ok")
+	s.writeJSON(w, r, http.StatusOK, v1.NewCheckpointRemoval(name))
+}
+
+// createSandboxCheckpoint serves POST /v1/sandboxes/{id}/checkpoints.
+func (s *Server) createSandboxCheckpoint(w http.ResponseWriter, r *http.Request) {
+	if !s.sandboxesAvailable(w, r) {
+		return
+	}
+	id := r.PathValue("id")
+	identity, _ := IdentityFrom(r.Context())
+	if err := identity.AuthorizeSandbox(id); err != nil {
+		s.recordSandboxAudit(r, "sandbox.checkpoint", id, "error")
+		s.writeError(w, r, err)
+		return
+	}
+	var req v1.CheckpointCreate
+	if status, err := readJSONWrite(w, r, &req); err != nil {
+		s.writeErrorStatus(w, r, status, sandboxAPIError(err))
+		return
+	}
+	rec, err := s.cfg.Sandboxes.Checkpoint(r.Context(), id, req.Name)
+	if err != nil {
+		s.recordSandboxAudit(r, "sandbox.checkpoint", id, "error")
+		s.writeError(w, r, sandboxAPIError(err))
+		return
+	}
+	s.recordSandboxAudit(r, "sandbox.checkpoint", id, "ok")
+	// 201: the images exist and are consistent (the checkpoint returns only once the
+	// guest was frozen, the images taken and the guest released).
+	s.writeJSON(w, r, http.StatusCreated, v1.NewCheckpointDocument(checkpointDocument(rec)))
+}
+
+// listSandboxCheckpoints serves GET /v1/sandboxes/{id}/checkpoints.
+func (s *Server) listSandboxCheckpoints(w http.ResponseWriter, r *http.Request) {
+	if !s.sandboxesAvailable(w, r) {
+		return
+	}
+	id := r.PathValue("id")
+	records, skipped, err := s.cfg.Sandboxes.Checkpoints(id)
+	if err != nil {
+		s.writeError(w, r, sandboxAPIError(err))
+		return
+	}
+	doc := v1.NewCheckpointList(checkpointDocuments(records))
+	doc.Warnings = warningsForCheckpoints(skipped)
+	s.writeJSON(w, r, http.StatusOK, doc)
+}
+
+// restoreCheckpoint serves POST /v1/sandboxes/{id}/checkpoints/{name}/restore: one clone
+// of a checkpoint that belongs to that sandbox. The sandbox need not still exist — a
+// checkpoint is an image — but a checkpoint belonging to another sandbox is not this
+// route's resource, so it is a 404.
+func (s *Server) restoreCheckpoint(w http.ResponseWriter, r *http.Request) {
+	if !s.sandboxesAvailable(w, r) {
+		return
+	}
+	id, name := r.PathValue("id"), r.PathValue("name")
+	identity, _ := IdentityFrom(r.Context())
+	if err := identity.AuthorizeSandbox(id); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	rec, err := s.cfg.Sandboxes.CheckpointByName(name)
+	if err != nil {
+		s.writeError(w, r, sandboxAPIError(err))
+		return
+	}
+	if rec.Sandbox != id {
+		s.writeError(w, r, output.NewErrorf(output.CodeNotFound,
+			"checkpoint %s belongs to sandbox %s, not %s", name, rec.Sandbox, id))
+		return
+	}
+	s.fork(w, r, func(req sandbox.ForkRequest) ([]sandbox.Record, error) {
+		req.Checkpoint, req.Count, req.IDs = name, 1, req.IDs[:0:0]
+		forks, err := s.cfg.Sandboxes.Fork(r.Context(), req)
+		return forks, err
+	})
+}
+
+// forkSandbox serves POST /v1/sandboxes/{id}/fork: clones of what that sandbox is running
+// now. It takes the checkpoint the caller did not have to name, and records it.
+func (s *Server) forkSandbox(w http.ResponseWriter, r *http.Request) {
+	if !s.sandboxesAvailable(w, r) {
+		return
+	}
+	id := r.PathValue("id")
+	identity, _ := IdentityFrom(r.Context())
+	if err := identity.AuthorizeSandbox(id); err != nil {
+		s.recordSandboxAudit(r, "sandbox.fork", id, "error")
+		s.writeError(w, r, err)
+		return
+	}
+	s.fork(w, r, func(req sandbox.ForkRequest) ([]sandbox.Record, error) {
+		return s.cfg.Sandboxes.ForkFromSandbox(r.Context(), id, req)
+	})
+}
+
+// fork reads the fork body, runs the fork and answers with the clones. The three fork
+// routes differ only in where they get the checkpoint from, so the mapping, the status
+// and the document are here once.
+func (s *Server) fork(w http.ResponseWriter, r *http.Request, run func(sandbox.ForkRequest) ([]sandbox.Record, error)) {
+	var req v1.SandboxFork
+	if status, err := readJSONWrite(w, r, &req); err != nil {
+		s.writeErrorStatus(w, r, status, sandboxAPIError(err))
+		return
+	}
+	if req.IdleTTLSeconds < -1 {
+		s.writeError(w, r, output.NewError(output.CodeInvalid,
+			"idleTtlSeconds must be zero (the node's default), -1 (never) or positive").
+			WithDetails(map[string]any{"reason": "invalid_ttl"}))
+		return
+	}
+	forks, err := run(sandbox.ForkRequest{
+		Count: req.Count,
+		Owner: req.Owner,
+		TTL:   time.Duration(req.IdleTTLSeconds) * time.Second,
+		IDs:   req.IDs,
+	})
+	if err != nil {
+		s.recordSandboxAudit(r, "sandbox.fork", "", "error")
+		s.writeError(w, r, sandboxAPIError(err))
+		return
+	}
+	s.recordSandboxAudit(r, "sandbox.fork", "", "ok")
+	items := make([]v1.Sandbox, 0, len(forks))
+	for _, rec := range forks {
+		items = append(items, sandboxDocument(rec))
+	}
+	s.writeJSON(w, r, http.StatusCreated, v1.NewSandboxList(items))
 }
