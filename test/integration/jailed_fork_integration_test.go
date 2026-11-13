@@ -41,6 +41,7 @@ package integration
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -64,8 +65,17 @@ const (
 	forkParentID = "fork-ev2"
 	forkCloneID  = "fork-ev2-c1"
 	// forkCheckpointName is the checkpoint taken of the live parent, which is what
-	// the clone is resumed from.
-	forkCheckpointName = "sbx-fork-c2"
+	// the clone is resumed from. The two-clone run and the stored-checkpoint run have
+	// names of their own, so a leftover from one is never read as another's.
+	forkCheckpointName   = "sbx-fork-c2"
+	forkTwinParentID     = "fork-ev3"
+	forkTwinA            = "fork-ev3-c1"
+	forkTwinB            = "fork-ev3-c2"
+	forkTwinCheckpoint   = "sbx-fork-c3"
+	forkTwinWritersLog   = "/workspace/fork-twin-writers.log"
+	forkStoredParentID   = "fork-ev4"
+	forkStoredClone      = "fork-ev4-c1"
+	forkStoredCheckpoint = "sbx-fork-c4"
 
 	// forkInheritedFile is written by the parent before the checkpoint, so the
 	// clone inherits it through the image; forkCloneFile and forkWritersLog are
@@ -101,42 +111,16 @@ func TestIntegration_JailedFork(t *testing.T) {
 	ctx := context.Background()
 	node := newSliceNode(t)
 
-	// a. The live parent, and the file the clone has to inherit from it.
-	parent, err := node.manager.Create(ctx, sandboxpkg.CreateRequest{
-		Template: node.templateRef,
-		ID:       forkParentID,
-		VCPUs:    checkpointVCPUs,
-		MemoryMB: checkpointMemoryMB,
-		TTL:      -1,
-	})
-	require.NoError(t, err, "create the sandbox the fork comes from")
-	t.Cleanup(func() {
-		if _, err := node.manager.Remove(context.Background(), parent.ID); err != nil {
-			t.Logf("removing the parent %s after the run: %v", parent.ID, err)
-		}
-	})
+	// a. The live parent, its file, and the checkpoint of it while it runs.
+	parent, chk, inherited := forkParent(t, node, forkParentID, forkCheckpointName)
 	parentGuest := dialSandboxGuest(t, parent)
 
-	inherited := deterministicBytes(forkInheritedBytes)
-	require.NoError(t, parentGuest.CopyTo(ctx, forkInheritedFile, bytes.NewReader(inherited), 0o644),
-		"write the file the clone has to inherit")
-	t.Logf("parent ready: id=%s netns=%s mac=%s ip=%s disk=%s",
-		parent.ID, parent.NetNS, parent.MAC, parent.GuestIP, parent.Disk)
-
-	// The checkpoint of the live sandbox, and then the fork of it. The two are
-	// timed apart because the question this run answers is how long a fork takes,
-	// not how long a checkpoint does.
-	checkpointStart := time.Now()
-	chk, err := node.manager.Checkpoint(ctx, parent.ID, forkCheckpointName)
-	require.NoError(t, err, "checkpoint the live sandbox")
-	t.Logf("checkpoint %s of the live sandbox in %s: %d bytes, memory %d in %d chunks, disk copy %d",
-		chk.Name, time.Since(checkpointStart).Round(time.Millisecond), chk.SizeBytes,
-		chk.Mem.TotalSize, len(chk.Mem.Chunks), fileSize(t, chk.Disk))
-	t.Cleanup(func() {
-		if _, err := node.manager.DeleteCheckpoint(context.Background(), forkCheckpointName); err != nil {
-			t.Logf("deleting checkpoint %s after the run: %v", forkCheckpointName, err)
-		}
-	})
+	// e2fsck on the artifact a fork copies: the checkpoint's own disk copy, read-only,
+	// reported as the image is. The guest was running when it was copied, so a journal
+	// left to replay is the normal state of a running guest's disk; a structural error
+	// is not. Neither is counted silently: the exit code and the findings are printed,
+	// and the classification is the check's own.
+	checkpointDiskFsck(t, chk.Disk)
 
 	forkStart := time.Now()
 	forks, err := node.manager.Fork(ctx, sandboxpkg.ForkRequest{
@@ -191,26 +175,13 @@ func TestIntegration_JailedFork(t *testing.T) {
 	requireAlive(t, parentPID, "the parent's VMM")
 	t.Logf("parent vmm pid %d is alive after the fork", parentPID)
 
-	// c. The clone's writers run again after ready.
+	// d. The clone's writers run again after ready.
 	cloneGuest := dialSandboxGuest(t, clone)
 	cloneBody := clonePayload(inherited, forkCloneBytes)
 	writersLog := wantWritersLog(forkWriterLines)
-	writeDeadline, cancel := context.WithTimeout(ctx, forkWriteDeadline)
-	defer cancel()
-
-	writeStart := time.Now()
-	require.NoError(t, cloneGuest.CopyTo(writeDeadline, forkCloneFile, bytes.NewReader(cloneBody), 0o644),
-		"a write from the host into the clone's filesystem, after ready: a frozen filesystem would block it")
-	// And a process inside the guest appending line by line, which is the writer the
-	// post-restore hook exists to release: it blocks on its first write if the
-	// filesystem is still frozen.
-	execResult, err := cloneGuest.ExecStatus(writeDeadline, []string{"/bin/sh", "-c", fmt.Sprintf(
-		`i=1; while [ $i -le %d ]; do printf 'line-%%02d\n' "$i" >> %s; i=$((i+1)); done`,
-		forkWriterLines, forkWritersLog)}, agent.ExecOptions{})
-	require.NoError(t, err, "a guest process writing after ready")
-	require.Zero(t, execResult.ExitCode, "the guest process that wrote after ready exited cleanly")
+	wrote := writeInGuest(t, cloneGuest, cloneBody, forkWritersLog, forkWriterLines)
 	t.Logf("clone writers ran after ready in %s: %d bytes copied in, %d lines appended in the guest",
-		time.Since(writeStart).Round(time.Millisecond), len(cloneBody), forkWriterLines)
+		wrote.Round(time.Millisecond), len(cloneBody), forkWriterLines)
 
 	// What the clone holds, read back in the guest: the inherited file intact, its
 	// own file exactly what was written, and the log complete and in order.
@@ -227,7 +198,7 @@ func TestIntegration_JailedFork(t *testing.T) {
 	_, statErr = parentGuest.Stat(ctx, forkWritersLog)
 	require.Error(t, statErr, "the parent does not have the clone's writers log either")
 
-	// d. The disk, once the guest is not holding it.
+	// e. The disk, once the guest is not holding it.
 	//
 	// The guest is asked first to put its filesystem where a clean shutdown leaves
 	// it: every write flushed, the superblock marked clean. It is asked because the
@@ -271,6 +242,209 @@ func fileSize(t *testing.T, path string) int64 {
 	return info.Size()
 }
 
+// TestIntegration_JailedForkTwoClones forks two clones of one live sandbox and holds
+// the three sandboxes to being three: three identities, three credentials, and two
+// writers running at the same time in the two clones while the parent is still up.
+//
+// The concurrency is the part a single clone cannot show. Two clones are made one after
+// the other (the manager is one-at-a-time), but nothing about their disk, their
+// credential or their jail is shared, so the writes must be able to overlap — and the
+// run proves they did by comparing the two writers' intervals rather than by trusting
+// that they were started together.
+func TestIntegration_JailedForkTwoClones(t *testing.T) {
+	requireSandboxHost(t)
+
+	ctx := context.Background()
+	node := newSliceNode(t)
+	parent, chk, inherited := forkParent(t, node, forkTwinParentID, forkTwinCheckpoint)
+	parentGuest := dialSandboxGuest(t, parent)
+
+	clones, forkReady := forkTwins(t, node, chk, []string{forkTwinA, forkTwinB})
+	t.Logf("two clones ready %s after the fork call (%.1fs per clone), parent %s (netns %s mac %s ip %s)",
+		forkReady.Round(time.Millisecond), forkReady.Seconds()/float64(len(clones)),
+		parent.ID, parent.NetNS, parent.MAC, parent.GuestIP)
+
+	// Three identities, compared in every direction: two sandboxes that share any of
+	// these are not two sandboxes.
+	all := append([]sandboxpkg.Record{parent}, clones...)
+	for i := range all {
+		for j := range all {
+			if i == j {
+				continue
+			}
+			require.NotEqual(t, all[i].NetNS, all[j].NetNS, "%s and %s have namespaces of their own", all[i].ID, all[j].ID)
+			require.NotEqual(t, all[i].MAC, all[j].MAC, "%s and %s have link addresses of their own", all[i].ID, all[j].ID)
+			require.NotEqual(t, all[i].GuestIP, all[j].GuestIP, "%s and %s have guest addresses of their own", all[i].ID, all[j].ID)
+		}
+	}
+	t.Logf("three identities: %s (%s %s), %s (%s %s), %s (%s %s)",
+		all[0].ID, all[0].NetNS, all[0].GuestIP, all[1].ID, all[1].NetNS, all[1].GuestIP,
+		all[2].ID, all[2].NetNS, all[2].GuestIP)
+
+	// Three credentials, and the clones' are neither the parent's nor each other's.
+	parentToken := publishedToken(t, parent)
+	firstToken := publishedToken(t, clones[0])
+	secondToken := publishedToken(t, clones[1])
+	require.NotEqual(t, parentToken, firstToken, "the first clone does not authenticate with its parent's credential")
+	require.NotEqual(t, parentToken, secondToken, "the second clone does not authenticate with its parent's credential")
+	require.NotEqual(t, firstToken, secondToken, "the two clones do not authenticate with one credential")
+	// And the checkpoint is where the parent's credential is meant to be: it is what the
+	// guest an image carries still accepts, until the clone's own hook replaces it.
+	require.Equal(t, parentToken, chk.Token, "the checkpoint carries the credential its image froze")
+
+	// Two writers at once, in the two clones, each writing the same payload into a log
+	// of its own. Each writer runs for long enough to overlap the other, and the
+	// intervals are compared rather than assumed.
+	type writer struct {
+		id         string
+		start, end time.Time
+		sat        time.Duration
+		err        error
+	}
+	results := make(chan writer, len(clones))
+	for _, clone := range clones {
+		clone := clone
+		go func() {
+			guest := dialSandboxGuest(t, clone)
+			start := time.Now()
+			body := clonePayload(inherited, forkCloneBytes/8)
+			err := writePairFor(guest, body, forkTwinWritersLog, forkWriterLines)
+			results <- writer{id: clone.ID, start: start, end: time.Now(), sat: time.Since(start), err: err}
+		}()
+	}
+	writers := make([]writer, 0, len(clones))
+	for range clones {
+		writers = append(writers, <-results)
+	}
+	for _, w := range writers {
+		require.NoError(t, w.err, "clone %s wrote while the other clone was writing", w.id)
+		t.Logf("clone %s wrote for %s", w.id, w.sat.Round(time.Millisecond))
+	}
+	overlapped := writers[0].start.Before(writers[1].end) && writers[1].start.Before(writers[0].end)
+	require.True(t, overlapped, "the two writers ran at the same time: %s..%s and %s..%s",
+		writers[0].start.Format(time.StampMilli), writers[0].end.Format(time.StampMilli),
+		writers[1].start.Format(time.StampMilli), writers[1].end.Format(time.StampMilli))
+
+	// What each clone wrote, read back in that clone: whole, and nothing of the
+	// other's.
+	for i, clone := range clones {
+		guest := dialSandboxGuest(t, clone)
+		body := clonePayload(inherited, forkCloneBytes/8)
+		require.Equal(t, sha256Hex(body), sha256Hex(readGuestFile(t, guest, forkCloneFile)),
+			"clone %s's own file is exactly what it wrote", clone.ID)
+		require.Equal(t, wantWritersLog(forkWriterLines), string(readGuestFile(t, guest, forkTwinWritersLog)),
+			"clone %s's log has every line once", clone.ID)
+		require.Equal(t, sha256Hex(inherited), sha256Hex(readGuestFile(t, guest, forkInheritedFile)),
+			"clone %s inherited its parent's file", clone.ID)
+		if i == 0 {
+			_, err := guest.Stat(ctx, forkTwinWritersLog+"-other")
+			require.Error(t, err)
+		}
+	}
+	// The first clone's log is not in the second, and neither clone's file is in the
+	// parent: three filesystems, three writers.
+	_, err := dialSandboxGuest(t, clones[1]).Stat(ctx, forkCloneFile)
+	require.Error(t, err, "the second clone does not see the first clone's file")
+	_, err = parentGuest.Stat(ctx, forkCloneFile)
+	require.Error(t, err, "the parent does not see either clone's file")
+
+	// And all three are alive at the end.
+	for _, rec := range all {
+		now, err := node.manager.Get(rec.ID)
+		require.NoError(t, err)
+		require.Equal(t, sandboxpkg.StateReady, now.State, "%s is still ready", rec.ID)
+		requireAlive(t, instancePID(t, node, rec.ID), "the VMM of "+rec.ID)
+	}
+	t.Logf("all three sandboxes are alive after two concurrent writers")
+}
+
+// TestIntegration_JailedForkFromStoredCheckpoint forks a checkpoint whose sandbox no
+// longer exists: a checkpoint is an image, not a child of a record, and the clone has
+// to come up with the parent's filesystem and none of the parent's other resources.
+func TestIntegration_JailedForkFromStoredCheckpoint(t *testing.T) {
+	requireSandboxHost(t)
+
+	ctx := context.Background()
+	node := newSliceNode(t)
+	parent, chk, inherited := forkParent(t, node, forkStoredParentID, forkStoredCheckpoint)
+
+	// The sandbox the checkpoint came from goes away, with everything it held.
+	freed, err := node.manager.Remove(ctx, parent.ID)
+	require.NoError(t, err, "remove the sandbox the checkpoint was taken from")
+	t.Logf("parent %s removed: netns=%v cgroup=%v jail=%v disk=%v",
+		parent.ID, freed.NetNS, freed.Cgroup, freed.JailRoot, freed.Disk)
+	_, err = node.manager.Get(parent.ID)
+	require.ErrorIs(t, err, sandboxpkg.ErrNotFound, "the parent is gone from the records")
+	require.NoDirExists(t, parent.JailRoot, "and its jail is gone with it")
+
+	// The checkpoint is still there, and still an image.
+	stored, err := node.manager.CheckpointByName(chk.Name)
+	require.NoError(t, err, "the checkpoint outlives the sandbox it was taken from")
+	require.Equal(t, parent.ID, stored.Sandbox, "it still names where it came from")
+	require.FileExists(t, stored.Disk)
+
+	clones, forkReady := forkTwins(t, node, stored, []string{forkStoredClone})
+	clone := clones[0]
+	t.Logf("fork ready from a stored checkpoint in %s: id=%s state=%s netns=%s mac=%s ip=%s",
+		forkReady.Round(time.Millisecond), clone.ID, clone.State, clone.NetNS, clone.MAC, clone.GuestIP)
+
+	require.NotEqual(t, parent.NetNS, clone.NetNS, "the clone's namespace is not the removed parent's")
+	require.NoDirExists(t, parent.NetNS, "and the parent's namespace is gone, not reused")
+	require.NotEqual(t, parent.MAC, clone.MAC)
+	// The clone's guest address may well be the removed parent's: its /30 went back to
+	// the pool when the parent was removed, and a fingerprint derived from the ID is what
+	// differs. Asserting otherwise would be asserting that a freed address is never
+	// handed out again, which is not what a pool promises.
+	t.Logf("the clone's address %s (the removed parent held %s, which the pool may now hand out again)",
+		clone.GuestIP, parent.GuestIP)
+
+	// The filesystem is the one the checkpoint froze, parent's file included, and the
+	// clone can write it.
+	guest := dialSandboxGuest(t, clone)
+	require.Equal(t, sha256Hex(inherited), sha256Hex(readGuestFile(t, guest, forkInheritedFile)),
+		"the clone resumed the filesystem the checkpoint froze")
+	body := clonePayload(inherited, forkCloneBytes)
+	wrote := writeInGuest(t, guest, body, forkWritersLog, forkWriterLines)
+	t.Logf("clone writers ran after ready in %s", wrote.Round(time.Millisecond))
+	require.Equal(t, sha256Hex(body), sha256Hex(readGuestFile(t, guest, forkCloneFile)))
+	require.Equal(t, wantWritersLog(forkWriterLines), string(readGuestFile(t, guest, forkWritersLog)))
+}
+
+// publishedToken is the credential the node published for a sandbox, which is the one
+// its guest accepts.
+func publishedToken(t *testing.T, rec sandboxpkg.Record) string {
+	t.Helper()
+
+	token, found, err := agent.ReadTokenFile(rec.AgentTokenFile)
+	require.NoError(t, err, "read sandbox %s's published credential", rec.ID)
+	require.True(t, found, "sandbox %s has a published credential", rec.ID)
+	return token
+}
+
+// writePairFor is writeInGuest with its error returned instead of asserted, so two
+// clones can write at the same time from two goroutines and the run can compare their
+// intervals.
+func writePairFor(guest *agent.Client, payload []byte, logPath string, lines int) error {
+	ctx, cancel := context.WithTimeout(context.Background(), forkWriteDeadline)
+	defer cancel()
+
+	if err := guest.CopyTo(ctx, forkCloneFile, bytes.NewReader(payload), 0o644); err != nil {
+		return err
+	}
+	// A writer that runs long enough to overlap its twin: the lines are separated by a
+	// short sleep, so neither interval is a single instant.
+	result, err := guest.ExecStatus(ctx, []string{"/bin/sh", "-c", fmt.Sprintf(
+		`i=1; while [ $i -le %d ]; do printf 'line-%%02d\n' "$i" >> %s; sleep 0.05; i=$((i+1)); done`, lines, logPath)},
+		agent.ExecOptions{})
+	if err != nil {
+		return err
+	}
+	if result.ExitCode != 0 {
+		return fmt.Errorf("the guest process writing %s exited %d", logPath, result.ExitCode)
+	}
+	return nil
+}
+
 // dialSandboxGuest dials a sandbox's guest agent with the credential the node
 // published for it. A record's muxer and token file are what a reader resolves; a
 // record cannot be dialled without them, which is why they are written before a
@@ -281,13 +455,152 @@ func dialSandboxGuest(t *testing.T, rec sandboxpkg.Record) *agent.Client {
 	token, found, err := agent.ReadTokenFile(rec.AgentTokenFile)
 	require.NoError(t, err, "read sandbox %s's agent token", rec.ID)
 	require.True(t, found, "sandbox %s published the credential its guest requires", rec.ID)
+	return dialGuestAt(t, rec.VsockPath, token)
+}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+// forkParent builds the live sandbox a fork comes from: created from the staged
+// template, with a file written into it that the clone has to inherit, checkpointed
+// while it runs. It returns the parent, its checkpoint and the file's bytes.
+//
+// Every run in this file starts here, so a fork is never proven against a parent built
+// one way in one test and another way in the next.
+func forkParent(t *testing.T, node *sliceNode, id, checkpointName string) (sandboxpkg.Record, sandboxpkg.CheckpointRecord, []byte) {
+	t.Helper()
+	ctx := context.Background()
+
+	parent, err := node.manager.Create(ctx, sandboxpkg.CreateRequest{
+		Template: node.templateRef,
+		ID:       id,
+		VCPUs:    checkpointVCPUs,
+		MemoryMB: checkpointMemoryMB,
+		TTL:      -1,
+	})
+	require.NoError(t, err, "create the sandbox the fork comes from")
+	t.Cleanup(func() {
+		// A run that removed the parent itself — the stored-checkpoint one — finds it
+		// gone, which is the state it wanted.
+		if _, err := node.manager.Remove(context.Background(), parent.ID); err != nil && !errors.Is(err, sandboxpkg.ErrNotFound) {
+			t.Logf("removing the parent %s after the run: %v", parent.ID, err)
+		}
+	})
+
+	inherited := deterministicBytes(forkInheritedBytes)
+	require.NoError(t, dialSandboxGuest(t, parent).CopyTo(ctx, forkInheritedFile, bytes.NewReader(inherited), 0o644),
+		"write the file the clone has to inherit")
+	t.Logf("parent ready: id=%s netns=%s mac=%s ip=%s disk=%s",
+		parent.ID, parent.NetNS, parent.MAC, parent.GuestIP, parent.Disk)
+
+	start := time.Now()
+	chk, err := node.manager.Checkpoint(ctx, parent.ID, checkpointName)
+	require.NoError(t, err, "checkpoint the live sandbox")
+	t.Logf("checkpoint %s of the live sandbox in %s: %d bytes, memory %d in %d chunks, disk copy %d",
+		chk.Name, time.Since(start).Round(time.Millisecond), chk.SizeBytes,
+		chk.Mem.TotalSize, len(chk.Mem.Chunks), fileSize(t, chk.Disk))
+	t.Cleanup(func() {
+		if _, err := node.manager.DeleteCheckpoint(context.Background(), checkpointName); err != nil {
+			t.Logf("deleting checkpoint %s after the run: %v", checkpointName, err)
+		}
+	})
+	return parent, chk, inherited
+}
+
+// checkpointDiskFsck runs e2fsck read-only over the disk copy a checkpoint publishes —
+// the file Fork copies for every clone — and says what it found.
+//
+// It does not assert "clean", because the honest answer for a disk copied from a
+// running guest is often "a journal is waiting": FIFREEZE flushes the guest's writers,
+// and what is left is whatever the filesystem had not committed. So the raw exit code
+// and output are printed, and the classification is the image's own: the journal is
+// replayed on a *copy* and that copy is checked again. A filesystem that is clean once
+// its journal is applied was interrupted, not damaged; one that is still wrong after it
+// is corruption, and this run fails on it.
+func checkpointDiskFsck(t *testing.T, disk string) {
+	t.Helper()
+
+	out, err := exec.Command("e2fsck", "-fn", disk).CombinedOutput()
+	code := exitCode(err)
+	t.Logf("e2fsck -fn %s (the published checkpoint's disk): exit %d\n%s",
+		disk, code, strings.TrimSpace(string(out)))
+	switch code {
+	case 0:
+		t.Logf("the checkpoint's disk needed nothing: it was copied clean")
+		return
+	case 4:
+		// 4 is "errors remain, nothing was changed": with -n, that is what a journal
+		// waiting to be replayed looks like.
+		t.Logf("the checkpoint's disk reports findings a read-only pass cannot settle; replaying the journal on a copy")
+	default:
+		require.Failf(t, "e2fsck on the checkpoint's disk", "exit %d means it could not check the filesystem at all: %s", code, out)
+	}
+
+	replay := filepath.Join(t.TempDir(), "replayed.ext4")
+	require.NoError(t, copySparse(disk, replay), "copy the checkpoint's disk to replay its journal on")
+	if out, err := exec.Command("e2fsck", "-fy", replay).CombinedOutput(); err != nil {
+		require.Failf(t, "e2fsck -fy on the copy", "replaying the journal failed: %v\n%s", err, out)
+	}
+	out, err = exec.Command("e2fsck", "-fn", replay).CombinedOutput()
+	t.Logf("e2fsck -fn after the replay: exit %d\n%s", exitCode(err), strings.TrimSpace(string(out)))
+	require.NoError(t, err, "the checkpoint's disk is whole once its journal is applied: nothing structural is wrong with it")
+}
+
+// exitCode is a command's exit status, or -1 when it did not run.
+func exitCode(err error) int {
+	if err == nil {
+		return 0
+	}
+	var exit *exec.ExitError
+	if errors.As(err, &exit) {
+		return exit.ExitCode()
+	}
+	return -1
+}
+
+// forkTwins forks count clones of one checkpoint and returns them once each is ready,
+// with the wall clock each launch took.
+func forkTwins(t *testing.T, node *sliceNode, chk sandboxpkg.CheckpointRecord, ids []string) ([]sandboxpkg.Record, time.Duration) {
+	t.Helper()
+
+	start := time.Now()
+	forks, err := node.manager.Fork(context.Background(), sandboxpkg.ForkRequest{
+		Checkpoint: chk.Name,
+		Count:      len(ids),
+		IDs:        ids,
+		TTL:        -1,
+	})
+	elapsed := time.Since(start)
+	require.NoError(t, err, "fork %d clones of %s", len(ids), chk.Name)
+	require.Len(t, forks, len(ids))
+	for _, clone := range forks {
+		clone := clone
+		t.Cleanup(func() {
+			if _, err := node.manager.Remove(context.Background(), clone.ID); err != nil {
+				t.Logf("removing the clone %s after the run: %v", clone.ID, err)
+			}
+		})
+		require.Equal(t, sandboxpkg.StateReady, clone.State, "clone %s is ready", clone.ID)
+	}
+	return forks, elapsed
+}
+
+// writeInGuest does the write a clone must be able to do after ready: one payload put
+// into its filesystem, and one guest process appending distinct lines to a log. It
+// returns how long the pair took. A filesystem still frozen would sit on the caller's
+// deadline instead of returning, which is why every caller passes one.
+func writeInGuest(t *testing.T, guest *agent.Client, payload []byte, logPath string, lines int) time.Duration {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), forkWriteDeadline)
 	defer cancel()
-	guest, err := agent.DialWithToken(ctx, rec.VsockPath, agent.DefaultPort, token)
-	require.NoError(t, err, "dial sandbox %s's guest agent at %s", rec.ID, rec.VsockPath)
-	t.Cleanup(func() { _ = guest.Close() })
-	return guest
+
+	start := time.Now()
+	require.NoError(t, guest.CopyTo(ctx, forkCloneFile, bytes.NewReader(payload), 0o644),
+		"a write from the host into the clone's filesystem, after ready: a frozen filesystem would block it")
+	result, err := guest.ExecStatus(ctx, []string{"/bin/sh", "-c", fmt.Sprintf(
+		`i=1; while [ $i -le %d ]; do printf 'line-%%02d\n' "$i" >> %s; i=$((i+1)); done`, lines, logPath)},
+		agent.ExecOptions{})
+	require.NoError(t, err, "a guest process writing after ready")
+	require.Zero(t, result.ExitCode, "the guest process that wrote after ready exited cleanly")
+	return time.Since(start)
 }
 
 // readGuestFile reads one file out of a guest.

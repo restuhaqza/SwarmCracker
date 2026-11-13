@@ -230,9 +230,11 @@ func evidence(t *testing.T, chk sandboxpkg.CheckpointRecord, snapshotDir string)
 type sliceNode struct {
 	manager *sandboxpkg.Manager
 	// checkpoints and snapshotsDir are where a checkpoint lands, and the working
-	// copies the snapshot manager makes on the way.
+	// copies the snapshot manager makes on the way. blobs is the chunk store the
+	// memory image lives in, which is what a run reads an image back out of.
 	checkpoints  *sandboxpkg.CheckpointStore
 	snapshotsDir string
+	blobs        checkpoint.Store
 	// stateDir holds the sandbox records, the checkpoint store and the registry.
 	stateDir string
 	// instances reads the registry the launcher publishes into: the host's own
@@ -241,6 +243,16 @@ type sliceNode struct {
 	// templateRef is the template staged from the built artifact, as the sidecar
 	// names it.
 	templateRef string
+
+	// The paths this node's parts live under. They are kept because one run — the
+	// negative control — has to reach them itself: it resumes a checkpoint through
+	// the launcher rather than the manager, which is the only way to leave the
+	// release out, and a launcher is configured with paths, not with a manager.
+	goldenDir string
+	rootfsDir string
+	logDir    string
+	jailBase  string
+	kernel    string
 }
 
 // newSliceNode builds the node with everything under one scratch directory of its
@@ -272,10 +284,11 @@ func newSliceNode(t *testing.T) *sliceNode {
 	// The node's own assembly, from values: the same function cmd/sandboxd calls
 	// with the values its flags produced. A manager this file assembled itself
 	// would be evidence about this file.
+	kernelPath := testAsset(t, "SWARMCRACKER_TEST_KERNEL", "/usr/share/firecracker/vmlinux")
 	manager, tokens, err := sandboxd.New(sandboxd.Config{
 		StateDir:        stateDir,
 		GoldenDir:       goldenDir,
-		KernelPath:      testAsset(t, "SWARMCRACKER_TEST_KERNEL", "/usr/share/firecracker/vmlinux"),
+		KernelPath:      kernelPath,
 		KernelProfiles:  config.DefaultKernelProfiles(),
 		RootfsDir:       rootfsDir,
 		LogDir:          logDir,
@@ -300,10 +313,50 @@ func newSliceNode(t *testing.T) *sliceNode {
 		manager:      manager,
 		checkpoints:  checkpoints,
 		snapshotsDir: snapshotsDir,
+		blobs:        blobs,
 		stateDir:     stateDir,
 		instances:    instances,
 		templateRef:  stageCheckpointTemplate(t, goldenDir),
+		goldenDir:    goldenDir,
+		rootfsDir:    rootfsDir,
+		logDir:       logDir,
+		jailBase:     jailBase,
+		kernel:       kernelPath,
 	}
+}
+
+// materializeCheckpointImages writes a checkpoint's two images out as files, which
+// is the form a launcher takes: the chunk store is the durable form, and a VMM reads
+// files. It is what a fork does internally (sandbox.Manager.stageCheckpointImages),
+// done here because the negative control hands the images to the launcher itself.
+func materializeCheckpointImages(t *testing.T, node *sliceNode, chk sandboxpkg.CheckpointRecord) (state, mem string) {
+	t.Helper()
+
+	dir := t.TempDir()
+	state, mem = filepath.Join(dir, "vm.state"), filepath.Join(dir, "vm.mem")
+
+	stateFile, err := os.Open(chk.State)
+	require.NoError(t, err, "open the checkpoint's state document")
+	defer func() { _ = stateFile.Close() }()
+
+	// Read verifies the state document against the manifest by consuming it, so the
+	// copy below is written from a rewound handle.
+	image, err := checkpoint.Read(context.Background(), node.blobs, chk.Mem, stateFile)
+	require.NoError(t, err, "read the checkpoint's memory image out of the chunk store")
+	defer func() { _ = image.Close() }()
+	_, err = stateFile.Seek(0, io.SeekStart)
+	require.NoError(t, err)
+
+	copyTo := func(path string, src io.Reader) {
+		dst, err := os.Create(path)
+		require.NoError(t, err)
+		_, err = io.Copy(dst, src)
+		require.NoError(t, err)
+		require.NoError(t, dst.Close())
+	}
+	copyTo(state, stateFile)
+	copyTo(mem, image)
+	return state, mem
 }
 
 // checkpointScratch makes the directory this run owns. It is not t.TempDir(): the
