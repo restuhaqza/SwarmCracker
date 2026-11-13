@@ -604,3 +604,46 @@ func TestReconcileReclaimsChunksNoCheckpointNames(t *testing.T) {
 	assert.Len(t, forks, 1)
 	assert.Equal(t, "c1", forks[0].ForkedFrom)
 }
+
+// TestAFailedCheckpointLeavesNoChunkBehind is the leak a restart would only paper over: the
+// memory image is written to the chunk store before the record exists, so a failure after
+// that point — a publication step that cannot finish, not a dead process — would leave
+// chunks no record names and no delete a caller could run. The failed call cleans up what
+// it wrote, so the store is where it was and there is nothing for a sweep to find.
+func TestAFailedCheckpointLeavesNoChunkBehind(t *testing.T) {
+	c := newCheckpointFixture(t)
+	stubQuiesce(t, nil)
+	rec := c.readySandbox(t, "sbx-1")
+
+	_, err := c.manager.Checkpoint(context.Background(), "sbx-1", "good")
+	require.NoError(t, err)
+	baseline := chunkFiles(t, c.blobs.Root())
+	require.NotZero(t, baseline)
+
+	// The sandbox's credential is read after its images are written, so a token file that
+	// cannot be read fails the checkpoint exactly where a real publication failure would:
+	// chunks written, record not yet published.
+	require.NoError(t, os.Remove(rec.AgentTokenFile))
+	require.NoError(t, os.MkdirAll(filepath.Join(rec.AgentTokenFile, "held"), 0o700))
+
+	_, err = c.manager.Checkpoint(context.Background(), "sbx-1", "failed")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "agent token")
+
+	assert.Equal(t, baseline, chunkFiles(t, c.blobs.Root()),
+		"a checkpoint that failed publishes no chunk of its own")
+	_, found, getErr := c.manager.cfg.Checkpoints.Get("failed")
+	require.NoError(t, getErr)
+	assert.False(t, found, "and no record")
+
+	// Nothing was left for a sweep to find: the failed call took its own garbage with it.
+	report, err := c.manager.ReconcileCheckpoints(context.Background())
+	require.NoError(t, err)
+	assert.Zero(t, report.Blobs, "the failed checkpoint left no chunk to reclaim later")
+	assert.Zero(t, report.Bytes)
+
+	// The checkpoint that succeeded is untouched and still forks.
+	forks, err := c.manager.Fork(context.Background(), ForkRequest{Checkpoint: "good"})
+	require.NoError(t, err)
+	assert.Len(t, forks, 1)
+}

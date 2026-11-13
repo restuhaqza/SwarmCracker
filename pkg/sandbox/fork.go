@@ -153,12 +153,15 @@ func (m *Manager) publishCheckpoint(
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return CheckpointRecord{}, fmt.Errorf("checkpoint %q: create %s: %w", name, dir, err)
 	}
-	// A checkpoint that fails to publish leaves no directory behind: the name is free
-	// again, and nothing half-written can be forked.
+	// A checkpoint that fails to publish leaves nothing behind: no directory, no manifest
+	// and no chunk. It is not enough to remove the directory — the memory image is written
+	// to the chunk store before the record exists, so a failure after that point would
+	// leave chunks with no record to free them, and no delete a caller could run.
 	published := false
 	defer func() {
 		if !published {
 			_ = os.RemoveAll(dir)
+			m.discardCheckpointImages(ctx, name)
 		}
 	}()
 
@@ -169,14 +172,6 @@ func (m *Manager) publishCheckpoint(
 	diskPath := filepath.Join(dir, "disk.ext4")
 	if err := moveFile(info.DiskPath, diskPath); err != nil {
 		return CheckpointRecord{}, fmt.Errorf("checkpoint %q: keep its disk copy: %w", name, err)
-	}
-
-	token, found, err := agent.ReadTokenFile(rec.AgentTokenFile)
-	if err != nil {
-		return CheckpointRecord{}, fmt.Errorf("checkpoint %q: read the guest's agent token: %w", name, err)
-	}
-	if !found {
-		return CheckpointRecord{}, fmt.Errorf("checkpoint %q: the sandbox has no agent token to carry", name)
 	}
 
 	// The memory image, in the format D11 fixes: 4 MiB content-addressed chunks with a
@@ -194,6 +189,17 @@ func (m *Manager) publishCheckpoint(
 	_ = memory.Close()
 	if err != nil {
 		return CheckpointRecord{}, fmt.Errorf("checkpoint %q: store its memory image: %w", name, err)
+	}
+
+	// The guest's credential goes into the record last, after the images: everything
+	// before this point is idempotent to redo, and a failure here is cleaned up by the
+	// deferred discard like any other.
+	token, found, err := agent.ReadTokenFile(rec.AgentTokenFile)
+	if err != nil {
+		return CheckpointRecord{}, fmt.Errorf("checkpoint %q: read the guest's agent token: %w", name, err)
+	}
+	if !found {
+		return CheckpointRecord{}, fmt.Errorf("checkpoint %q: the sandbox has no agent token to carry", name)
 	}
 
 	chk := CheckpointRecord{
@@ -398,6 +404,28 @@ func (m *Manager) DeleteCheckpoint(ctx context.Context, name string) (Checkpoint
 		Int("retained", released.Retained).
 		Msg("Sandbox checkpoint is forgotten")
 	return released, nil
+}
+
+// discardCheckpointImages removes what a failed checkpoint wrote to the chunk store: its
+// manifest, and then the chunks nothing else names.
+//
+// It is the same mark-and-sweep a delete runs, for the same reason: a chunk is shared, so
+// a checkpoint may only free the ones no surviving manifest references. A failure here is
+// logged rather than returned — the caller is already returning the failure that brought it
+// here — and the daemon's start pass is the second net.
+func (m *Manager) discardCheckpointImages(ctx context.Context, name string) {
+	if m.cfg.CheckpointBlobs == nil {
+		return
+	}
+	if err := m.cfg.CheckpointBlobs.Delete(ctx, name); err != nil {
+		log.Warn().Err(err).Str("checkpoint", name).
+			Msg("Could not remove the manifest of a checkpoint that failed to publish")
+		return
+	}
+	if report, err := m.cfg.CheckpointBlobs.Prune(ctx, 0); err != nil {
+		log.Warn().Err(err).Str("checkpoint", name).Int("chunks", report.Blobs).Int64("bytes", report.Bytes).
+			Msg("Could not reclaim the chunks of a checkpoint that failed to publish")
+	}
 }
 
 // retainedImages reports how many checkpoints remain and how much memory image they

@@ -174,8 +174,14 @@ func New(cfg Config) (*sandbox.Manager, *apihttp.TokenStore, error) {
 	// the reclamation of. A failure here does not stop the daemon — the chunks are wasted
 	// space, not incorrect state — but it is reported, because a store that cannot be
 	// swept is one to look at before it grows.
-	if _, err := manager.ReconcileCheckpoints(context.Background()); err != nil {
-		log.Warn().Err(err).Msg("Could not reclaim orphaned checkpoint chunks at start")
+	report, err := manager.ReconcileCheckpoints(context.Background())
+	if err != nil {
+		// The counts are in the warning because they are the operator's only view of what
+		// stayed: a store that could not be swept is one to look at before it grows.
+		log.Warn().Err(err).
+			Int("chunks_reclaimed", report.Blobs).
+			Int64("bytes_reclaimed", report.Bytes).
+			Msg("Could not reclaim every orphaned checkpoint chunk at start")
 	}
 	return manager, tokens, nil
 }
