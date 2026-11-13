@@ -75,7 +75,7 @@ func (r *remoteClient) migrate(ctx context.Context, taskID, targetNode string) (
 	}
 
 	var doc v1.Migration
-	if err := decodeJSON("v1/migrations", resp.body, &doc); err != nil {
+	if err := decodeJSON(ctx, "v1/migrations", resp.body, &doc); err != nil {
 		return v1.Migration{}, err
 	}
 	// The route answers one document kind with the two fields every caller
