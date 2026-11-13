@@ -756,26 +756,33 @@ func TestTheThawAfterAForkDialsWithTheClonesCredential(t *testing.T) {
 	// The stub records what the dial would have presented: the token file beside the muxer
 	// at the moment of each call.
 	type call struct {
-		action string
-		token  string
+		action    string
+		token     string
+		vsockPath string
 	}
 	var calls []call
 	original := askGuestToQuiesce
 	askGuestToQuiesce = func(_ context.Context, rec Record, action string) (agent.QuiesceReport, error) {
 		token, _, _ := agent.ReadTokenFile(rec.AgentTokenFile)
-		calls = append(calls, call{action: action, token: token})
+		calls = append(calls, call{action: action, token: token, vsockPath: rec.VsockPath})
 		return agent.QuiesceReport{Action: action, Mode: agent.QuiesceModeFreeze, Mounts: []string{"/"}}, nil
 	}
 	t.Cleanup(func() { askGuestToQuiesce = original })
 
 	chk, err := c.manager.Checkpoint(context.Background(), "parent", "c1")
 	require.NoError(t, err)
-	_, err = c.manager.Fork(context.Background(), ForkRequest{Checkpoint: "c1"})
+	forks, err := c.manager.Fork(context.Background(), ForkRequest{Checkpoint: "c1"})
 	require.NoError(t, err)
+	require.Len(t, forks, 1)
 
 	require.NotEmpty(t, calls)
 	thaw := calls[len(calls)-1]
 	assert.Equal(t, agent.QuiesceThaw, thaw.action)
 	assert.NotEmpty(t, thaw.token, "the release is authenticated: its token file exists when it dials")
 	assert.NotEqual(t, chk.Token, thaw.token, "and it presents the clone's credential, not the checkpoint's")
+	// The address, not only the credential: a dial with no path is a call that fails and
+	// reads as a warning while the sandbox reports ready.
+	assert.NotEmpty(t, thaw.vsockPath, "the release has an address to dial")
+	assert.Equal(t, forks[0].VsockPath, thaw.vsockPath, "and it is the clone's own muxer")
+	assert.NotEqual(t, "/run/firecracker/parent.vsock", thaw.vsockPath, "not the path the image recorded for the parent's chroot")
 }

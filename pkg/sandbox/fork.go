@@ -747,15 +747,32 @@ func (m *Manager) buildFork(ctx context.Context, rec *Record, chk CheckpointReco
 	}
 	rec.AgentTokenFile = cloneTokenFile
 	a.token = cloneToken
+	// The address the release below dials: markReady records it a moment later, and a
+	// release that ran before it would be a call with no address to dial — logged as a
+	// warning while the sandbox reported ready.
+	rec.VsockPath = launched.VsockPath
 
 	// The clone's guest released the freeze its image carried when its post-restore hook
 	// ran, and this is the same release asked for directly: "ready" has to mean the
 	// clone's writers run again, not that they are merely able to. It is idempotent, and
 	// a guest that does not implement quiesce — an older template, which cannot have
 	// been frozen — is not a failure.
-	if _, err := m.quiesce(ctx, *rec, agent.QuiesceThaw); err != nil {
-		log.Warn().Err(err).Str("sandbox_id", rec.ID).
-			Msg("Could not confirm that the clone's writers were released after its resume")
+	// A clone whose writers are still blocked is not a usable sandbox, so a release that
+	// fails fails the launch — except on a guest that does not implement quiesce, which
+	// cannot have been frozen and is not being asked to release anything.
+	released, err := m.quiesce(ctx, *rec, agent.QuiesceThaw)
+	if err != nil {
+		if isUnsupportedOp(err) {
+			log.Info().Str("sandbox_id", rec.ID).
+				Msg("Clone resumed from a checkpoint its guest could not have frozen: no release to make")
+		} else {
+			return fmt.Errorf("sandbox %s: release the writers its checkpoint froze: %w", rec.ID, err)
+		}
+	} else {
+		log.Info().
+			Str("sandbox_id", rec.ID).
+			Str("mounts", strings.Join(released.Mounts, ",")).
+			Msg("Clone's writers released after its resume")
 	}
 	return m.markReady(rec, a, launched)
 }
@@ -796,6 +813,13 @@ func (m *Manager) allocateCheckpointName(requested string) (string, error) {
 		return "", fmt.Errorf("%w: checkpoint %s", ErrExists, name)
 	}
 	return name, nil
+}
+
+// isUnsupportedOp reports whether a guest refused an operation because it does not
+// implement it, which is a fact about the template rather than a failure of the call.
+func isUnsupportedOp(err error) bool {
+	var typed *agent.Error
+	return errors.As(err, &typed) && typed.Code == agent.CodeUnsupportedOp
 }
 
 // askGuestToQuiesce is how the node asks a sandbox's guest to stop or release its
