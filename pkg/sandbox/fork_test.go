@@ -1,7 +1,10 @@
 package sandbox
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -562,4 +565,42 @@ func TestCheckpointRefusesATemplateWhoseAgentCannotFreeze(t *testing.T) {
 	assert.Contains(t, err.Error(), "quiesce")
 	assert.Contains(t, err.Error(), "caps:")
 	assert.Empty(t, c.snapshots.created, "no image is taken of a guest that cannot be stopped")
+}
+
+// TestReconcileReclaimsChunksNoCheckpointNames is the leak that a delete never triggers: a
+// checkpoint writes its chunks and then the manifest that names them, so a process killed
+// in between leaves 4 MiB blocks no manifest references and no record names. The daemon's
+// start pass is what reclaims them — and it must not touch a chunk a checkpoint does name.
+func TestReconcileReclaimsChunksNoCheckpointNames(t *testing.T) {
+	c := newCheckpointFixture(t)
+	stubQuiesce(t, nil)
+	c.readySandbox(t, "sbx-1")
+
+	_, err := c.manager.Checkpoint(context.Background(), "sbx-1", "c1")
+	require.NoError(t, err)
+	named := chunkFiles(t, c.blobs.Root())
+	require.NotZero(t, named)
+
+	// A chunk written by a checkpoint that died before publishing its manifest: it is in
+	// the store, and nothing names it.
+	orphan := []byte("a chunk of an image whose manifest was never published")
+	sum := sha256.Sum256(orphan)
+	digest := checkpoint.Digest(hex.EncodeToString(sum[:]))
+	require.NoError(t, c.blobs.PutChunk(context.Background(), digest, bytes.NewReader(orphan)))
+	require.Equal(t, named+1, chunkFiles(t, c.blobs.Root()))
+
+	report, err := c.manager.ReconcileCheckpoints(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 1, report.Blobs, "the chunk nothing named is reclaimed")
+	assert.Equal(t, int64(len(orphan)), report.Bytes)
+	assert.Equal(t, named, chunkFiles(t, c.blobs.Root()), "the chunk a checkpoint names is kept")
+
+	// The checkpoint it belongs to still forks: the pass removes what nothing names and
+	// nothing else.
+	_, err = c.blobs.Chunk(context.Background(), digest)
+	assert.Error(t, err, "the orphan is gone from the store")
+	forks, err := c.manager.Fork(context.Background(), ForkRequest{Checkpoint: "c1"})
+	require.NoError(t, err)
+	assert.Len(t, forks, 1)
+	assert.Equal(t, "c1", forks[0].ForkedFrom)
 }

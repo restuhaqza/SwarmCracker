@@ -258,6 +258,40 @@ func (m *Manager) Checkpoints(sandboxID string) ([]CheckpointRecord, []string, e
 	return out, skipped, nil
 }
 
+// ReconcileCheckpoints reclaims the memory-image chunks no checkpoint names, and reports
+// what it removed.
+//
+// It is what the daemon runs once before it serves anything. Deleting a checkpoint
+// reclaims its own chunks, but a chunk can be orphaned without a delete ever happening: a
+// checkpoint writes its chunks and then publishes the manifest that names them, so a
+// process killed in between — a crash, a reboot, a power loss — leaves 4 MiB blocks that
+// no manifest references and no record names, and nothing would ever trigger their
+// reclamation. The manager's one-at-a-time slot protects against a race, not against a
+// death; this pass is what closes that.
+//
+// It expects the node's single daemon to be the only writer, which is the same assumption
+// every store in this package makes: a pass that ran while another process was mid-checkpoint
+// would reclaim the chunks it had written but not yet named.
+func (m *Manager) ReconcileCheckpoints(ctx context.Context) (checkpoint.PruneReport, error) {
+	m.slots <- struct{}{}
+	defer func() { <-m.slots }()
+
+	if m.cfg.CheckpointBlobs == nil {
+		return checkpoint.PruneReport{}, fmt.Errorf("%w: this node keeps no sandbox checkpoints", ErrNotImplemented)
+	}
+	report, err := m.cfg.CheckpointBlobs.Prune(ctx, 0)
+	if err != nil {
+		return report, fmt.Errorf("reclaim the checkpoint chunks nothing names: %w", err)
+	}
+	if report.Blobs != 0 {
+		log.Info().
+			Int("chunks", report.Blobs).
+			Int64("bytes", report.Bytes).
+			Msg("Reclaimed checkpoint chunks no checkpoint names")
+	}
+	return report, nil
+}
+
 // CheckpointByName returns one checkpoint of this node, or says it is not there. It is
 // the read a fork route resolves its input with, and it does not care whether the
 // sandbox the checkpoint was taken from still exists: a checkpoint is an image.

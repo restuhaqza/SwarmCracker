@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rs/zerolog/log"
+
 	"github.com/restuhaqza/swarmcracker/pkg/apihttp"
 	"github.com/restuhaqza/swarmcracker/pkg/checkpoint"
 	"github.com/restuhaqza/swarmcracker/pkg/jailer"
@@ -165,6 +167,15 @@ func New(cfg Config) (*sandbox.Manager, *apihttp.TokenStore, error) {
 	})
 	if err != nil {
 		return nil, nil, err
+	}
+	// Reclaim what a previous life of this node left behind before it serves anything: a
+	// checkpoint writes its chunks and then the manifest that names them, so a process
+	// killed in between leaves blocks nothing references and nothing would ever trigger
+	// the reclamation of. A failure here does not stop the daemon — the chunks are wasted
+	// space, not incorrect state — but it is reported, because a store that cannot be
+	// swept is one to look at before it grows.
+	if _, err := manager.ReconcileCheckpoints(context.Background()); err != nil {
+		log.Warn().Err(err).Msg("Could not reclaim orphaned checkpoint chunks at start")
 	}
 	return manager, tokens, nil
 }
