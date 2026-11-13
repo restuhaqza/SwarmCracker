@@ -882,3 +882,20 @@ func TestCheckpointRoutesAnswerNotImplementedWithoutAManager(t *testing.T) {
 		assert.Equal(t, "sandboxes", decodeErrorBody(t, rec).Error.Details["capability"])
 	}
 }
+
+// TestCheckpointRoutesSayWhenTheNodeServesNone pins the refusal a node configured without
+// checkpoints gives: a 501 that names the capability and the reason, not an internal error
+// that reads as a broken store.
+func TestCheckpointRoutesSayWhenTheNodeServesNone(t *testing.T) {
+	boxes := &fakeSandboxes{records: map[string]sandbox.Record{"a": {ID: "a", State: sandbox.StateReady}}}
+	boxes.checkpointErr = sandbox.ErrNotImplemented
+	srv, store := sandboxServer(t, boxes)
+	admin, _, err := store.Create("admin", RoleAdmin)
+	require.NoError(t, err)
+
+	rec := sandboxRequest(t, srv, admin, http.MethodPost, "/v1/sandboxes/a/checkpoints", `{"name":"c1"}`)
+	require.Equal(t, http.StatusNotImplemented, rec.Code, rec.Body.String())
+	doc := decodeErrorBody(t, rec)
+	assert.Equal(t, "checkpoints_unavailable", doc.Error.Details["reason"])
+	assert.Equal(t, "sandboxes:checkpoints", doc.Error.Details["capability"])
+}

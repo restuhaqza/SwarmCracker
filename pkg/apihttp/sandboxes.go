@@ -381,6 +381,13 @@ func sandboxAPIError(err error) error {
 	}
 
 	switch {
+	case errors.Is(err, sandbox.ErrNotImplemented):
+		// Configured without checkpoints: a capability this node does not serve, said so
+		// explicitly. It must not surface as an internal error, and it must not look like
+		// a store that broke.
+		return output.NewError(output.CodeNotImplemented,
+			"this node serves no sandbox checkpoints").
+			WithDetails(map[string]any{"reason": "checkpoints_unavailable", "capability": "sandboxes:checkpoints"})
 	case errors.Is(err, sandbox.ErrNotFound):
 		return output.NewError(output.CodeNotFound, err.Error())
 	case errors.Is(err, sandbox.ErrExists):

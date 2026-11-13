@@ -11,6 +11,8 @@ package sandboxd
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"time"
@@ -97,6 +99,16 @@ type Config struct {
 // New opens everything a sandbox needs on this node and returns the manager and
 // the token store the API authenticates against.
 func New(cfg Config) (*sandbox.Manager, *apihttp.TokenStore, error) {
+	// A checkpoint is three stores working together: the records, the chunk store its
+	// memory images live in, and the snapshot manager that takes the images. Half of them
+	// is worse than none — chunks written to one place with manifests in another, or a
+	// start pass that sweeps a store nobody filled — so a node is either configured for
+	// checkpoints or it is not, and a partial configuration is refused here rather than
+	// found later as an image nothing can free.
+	if err := checkpointsConfigured(cfg); err != nil {
+		return nil, nil, err
+	}
+
 	store, err := sandbox.NewStore(sandbox.StoreConfig{Dir: sandbox.Dir(cfg.StateDir)})
 	if err != nil {
 		return nil, nil, err
@@ -175,6 +187,11 @@ func New(cfg Config) (*sandbox.Manager, *apihttp.TokenStore, error) {
 	// space, not incorrect state — but it is reported, because a store that cannot be
 	// swept is one to look at before it grows.
 	report, err := manager.ReconcileCheckpoints(context.Background())
+	if errors.Is(err, sandbox.ErrNotImplemented) {
+		// No checkpoint store on this node: there is nothing to sweep, and that is a
+		// configuration, not a failure.
+		return manager, tokens, nil
+	}
 	if err != nil {
 		// The counts are in the warning because they are the operator's only view of what
 		// stayed: a store that could not be swept is one to look at before it grows.
@@ -194,4 +211,23 @@ func tokenFile(cfg Config) string {
 		return path
 	}
 	return filepath.Join(cfg.StateDir, "api", "tokens.json")
+}
+
+// checkpointsConfigured refuses a node that was given some of the checkpoint stores and
+// not the rest, and names the ones it is missing.
+func checkpointsConfigured(cfg Config) error {
+	var missing []string
+	if cfg.Checkpoints == nil {
+		missing = append(missing, "the checkpoint record store (--checkpoints)")
+	}
+	if cfg.CheckpointBlobs == nil {
+		missing = append(missing, "the checkpoint chunk store (its memory images)")
+	}
+	if cfg.Snapshots == nil {
+		missing = append(missing, "the snapshot manager (the Firecracker images)")
+	}
+	if len(missing) == 0 || len(missing) == 3 {
+		return nil
+	}
+	return fmt.Errorf("sandboxd: checkpoints are configured in part: missing %s", strings.Join(missing, ", "))
 }

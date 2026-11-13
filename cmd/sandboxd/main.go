@@ -41,10 +41,12 @@ import (
 	"github.com/urfave/cli/v2"
 
 	"github.com/restuhaqza/swarmcracker/pkg/apihttp"
+	"github.com/restuhaqza/swarmcracker/pkg/checkpoint"
 	"github.com/restuhaqza/swarmcracker/pkg/client"
 	"github.com/restuhaqza/swarmcracker/pkg/config"
 	"github.com/restuhaqza/swarmcracker/pkg/sandbox"
 	"github.com/restuhaqza/swarmcracker/pkg/sandboxd"
+	"github.com/restuhaqza/swarmcracker/pkg/snapshot"
 )
 
 // Version is set by the build (-X main.Version=...).
@@ -112,7 +114,7 @@ func appFlags() []cli.Flag {
 		&cli.DurationFlag{Name: "reap-interval", Value: defaultReapEvery, Usage: "How often idle sandboxes are looked for"},
 		&cli.DurationFlag{Name: "default-ttl", Value: 0, Usage: "Idle TTL applied to a sandbox created without one (0 = never reap)"},
 		&cli.DurationFlag{Name: "ready-timeout", Value: defaultReadyWindow, Usage: "How long a sandbox's boot may take to reach the guest agent's hello"},
-		&cli.StringFlag{Name: "log-level", Value: "info", Usage: "Log level (debug, info, warn, error)"},
+		&cli.BoolFlag{Name: "no-checkpoints", Usage: "Serve no sandbox checkpoints: the checkpoint routes then answer 501 checkpoints_unavailable"},
 	}
 }
 
@@ -213,6 +215,11 @@ func build(ctx *cli.Context) (*sandbox.Manager, *apihttp.TokenStore, error) {
 		return nil, nil, err
 	}
 
+	checkpoints, blobs, snapshots, err := checkpointStores(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	return sandboxd.New(sandboxd.Config{
 		StateDir:        ctx.String("state-dir"),
 		GoldenDir:       ctx.String("golden-dir"),
@@ -232,7 +239,44 @@ func build(ctx *cli.Context) (*sandbox.Manager, *apihttp.TokenStore, error) {
 		DefaultTTL:      ctx.Duration("default-ttl"),
 		ReadyTimeout:    ctx.Duration("ready-timeout"),
 		TokenFile:       tokenFile(ctx),
+
+		// A checkpoint is three stores working together: its record, the chunk store its
+		// memory image lives in, and the snapshot manager that takes the images. They are
+		// built together or not at all, and pkg/sandboxd refuses a node that has some of
+		// them.
+		Checkpoints:     checkpoints,
+		CheckpointBlobs: blobs,
+		Snapshots:       snapshots,
 	})
+}
+
+// checkpointStores builds the three stores a checkpoint needs, or none of them when the
+// node was started with --no-checkpoints: a node either takes checkpoints or says it does
+// not, and the routes for it answer 501 checkpoints_unavailable.
+func checkpointStores(ctx *cli.Context) (*sandbox.CheckpointStore, checkpoint.Store, sandbox.Snapshotter, error) {
+	if ctx.Bool("no-checkpoints") {
+		return nil, nil, nil, nil
+	}
+	stateDir := ctx.String("state-dir")
+
+	records, err := sandbox.NewCheckpointStore(filepath.Join(stateDir, sandbox.DirNameCheckpoints))
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	blobs, err := checkpoint.NewLocal(checkpoint.LocalConfig{Root: checkpoint.Dir(stateDir)})
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	// The snapshot manager's directory is its working copy: a checkpoint moves the images
+	// it keeps out of it and publishes its record last, so this holds what a create is
+	// using rather than what a fork resumes.
+	snapshots, err := snapshot.NewManager(snapshot.SnapshotConfig{
+		SnapshotDir: filepath.Join(stateDir, "snapshot-work"),
+	})
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return records, blobs, snapshots, nil
 }
 
 // positiveFlag parses a numeric flag whose zero means "not set".
