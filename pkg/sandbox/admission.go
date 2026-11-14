@@ -285,15 +285,67 @@ func diskBytes(path string) int64 {
 }
 
 // admit decides whether one more sandbox of this size and owner fits, before anything
-// is allocated for it. It returns a *QuotaError (which is an ErrQuota) when it does
-// not, and any other error when it could not be decided.
+// is allocated for it: the create path's entry to the checks below. It returns a
+// *QuotaError (which is an ErrQuota) when it does not, and any other error when it
+// could not be decided.
 func (m *Manager) admit(tmpl template, size sandboxSize, owner string) error {
-	quota := m.cfg.Quota
-
 	current, err := m.heldNow()
 	if err != nil {
 		return err
 	}
+
+	// The sandbox does not exist yet, so its disk is counted at what copying the
+	// template's image can occupy: the image's own size. That is the most the copy can
+	// take (a reflink or sparse copy takes less), which is the side to be wrong on —
+	// a reservation that was too small would admit the create that fills the disk.
+	reservation, err := diskReservation(tmpl.artifact.Path)
+	if err != nil {
+		return err
+	}
+	return m.admitOne(current, size, reservation, owner)
+}
+
+// admitClones decides whether count clones of one image fit, before any of them exists.
+//
+// A clone is admitted like any other sandbox, and the numbers come from the image it
+// resumes rather than from a template: the memory it will occupy is the memory the image
+// is (a memory image is exactly as large as the guest's memory, which is why a fork does
+// not choose its own size), and the disk it takes is the copy it makes of the checkpoint's
+// disk — the same rule the create path applies to the artifact it copies. The chunks a
+// memory image is stored in are deliberately not counted: they belong to the checkpoint
+// and are shared by every clone, so a fork adds no chunk bytes.
+//
+// The whole fork is admitted or none of it is. The ledger is advanced as each clone is
+// admitted, so a fork of ten is refused when the third of them would not fit — and it is
+// refused *before* any of them exists, which is the point: no record, no namespace, no
+// disk and no staged image for a fork the node will not take.
+func (m *Manager) admitClones(size sandboxSize, diskImage string, count int, owner string) error {
+	current, err := m.heldNow()
+	if err != nil {
+		return err
+	}
+	// The image a clone copies is the checkpoint's disk. A checkpoint without one cannot
+	// be reserved for, and the fork is refused rather than admitted against a number
+	// nobody has.
+	reservation, err := diskReservation(diskImage)
+	if err != nil {
+		return err
+	}
+
+	owner = strings.TrimSpace(owner)
+	for i := 0; i < count; i++ {
+		if err := m.admitOne(current, size, reservation, owner); err != nil {
+			return err
+		}
+		current = current.plusOne(size, reservation, owner)
+	}
+	return nil
+}
+
+// admitOne decides whether one more sandbox of this shape fits against a ledger, which is
+// the node as it was measured plus whatever this call has already reserved for itself.
+func (m *Manager) admitOne(current held, size sandboxSize, reservation int64, owner string) error {
+	quota := m.cfg.Quota
 
 	owner = strings.TrimSpace(owner)
 	ownersShare := int64(current.owners[owner])
@@ -320,14 +372,6 @@ func (m *Manager) admit(tmpl template, size sandboxSize, owner string) error {
 		})
 	}
 
-	// The sandbox does not exist yet, so its disk is counted at what copying the
-	// template's image can occupy: the image's own size. That is the most the copy can
-	// take (a reflink or sparse copy takes less), which is the side to be wrong on —
-	// a reservation that was too small would admit the create that fills the disk.
-	reservation, err := diskReservation(tmpl.artifact.Path)
-	if err != nil {
-		return err
-	}
 	if disk := current.diskBytes + reservation; disk > quota.diskBudget() {
 		return m.refuse(QuotaError{
 			Resource:  QuotaResourceNodeDiskMB,
@@ -338,6 +382,21 @@ func (m *Manager) admit(tmpl template, size sandboxSize, owner string) error {
 	}
 
 	return nil
+}
+
+// plusOne is the ledger as it would be if one more sandbox of this shape were admitted.
+// The owner map is copied rather than advanced in place: a ledger is a measurement of what
+// a node holds, and a reservation being considered must not rewrite it.
+func (h held) plusOne(size sandboxSize, diskBytes int64, owner string) held {
+	next := h
+	next.owners = make(map[string]int, len(h.owners)+1)
+	for id, count := range h.owners {
+		next.owners[id] = count
+	}
+	next.owners[owner]++
+	next.memoryMB += int64(size.memoryMB)
+	next.diskBytes += diskBytes
+	return next
 }
 
 // mibCeil rounds a byte count up to whole MiB, for a report in the limit's own unit.
@@ -357,13 +416,14 @@ func (m *Manager) refuse(refusal QuotaError) error {
 	return &refusal
 }
 
-// diskReservation is the disk one create is about to occupy: the size of the template
-// image it copies. A template whose image cannot be measured cannot be reserved for,
-// and the create is refused rather than admitted against a number nobody has.
-func diskReservation(artifact string) (int64, error) {
-	info, err := os.Stat(artifact)
+// diskReservation is the disk one sandbox is about to occupy: the size of the image it
+// copies — the template's artifact for a create, the checkpoint's disk for a clone. An
+// image that cannot be measured cannot be reserved for, so the sandbox is refused rather
+// than admitted against a number nobody has.
+func diskReservation(image string) (int64, error) {
+	info, err := os.Stat(image)
 	if err != nil {
-		return 0, fmt.Errorf("sandbox: measure the template image %s to reserve disk for the sandbox: %w", artifact, err)
+		return 0, fmt.Errorf("sandbox: measure the image %s a sandbox would copy, to reserve its disk: %w", image, err)
 	}
 	return info.Size(), nil
 }

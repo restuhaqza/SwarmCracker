@@ -717,16 +717,23 @@ func TestAForkThatCannotBuildItsCloneFreesWhatItAllocated(t *testing.T) {
 		chk, err := c.manager.Checkpoint(context.Background(), "sbx-1", "c1")
 		require.NoError(t, err)
 
-		// The record names a disk the node has lost, which a fork meets when it copies
-		// the image each clone resumes from.
+		// The record names a disk the node has lost. A fork meets it at admission, which
+		// reserves the disk each clone will copy: the clone is refused before its record
+		// exists, so there is not even a failed record to free — the same "holds nothing"
+		// rule, one step earlier.
 		stray := chk
 		stray.Disk = filepath.Join(filepath.Dir(chk.Disk), "absent.ext4")
 		require.NoError(t, c.manager.cfg.Checkpoints.Put(stray))
 
 		forks, err := c.manager.Fork(context.Background(), ForkRequest{Checkpoint: "c1", IDs: []string{"clone-2"}})
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "its own disk")
+		assert.Contains(t, err.Error(), "absent.ext4", "the refusal names the image the node has lost")
 		assert.Empty(t, forks)
+
+		_, getErr := c.manager.Get("clone-2")
+		assert.ErrorIs(t, getErr, ErrNotFound, "no clone was made, not even a failed one")
+		assert.Empty(t, c.network.attached)
+		assert.Empty(t, c.launcher.requests)
 	})
 }
 

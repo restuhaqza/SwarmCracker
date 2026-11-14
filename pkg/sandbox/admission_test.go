@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -289,4 +290,157 @@ func TestQuotaErrorIsAnErrQuota(t *testing.T) {
 	assert.ErrorIs(t, err, ErrQuota)
 	require.True(t, errors.Is(err, ErrQuota))
 	assert.False(t, errors.Is(err, ErrNotFound))
+}
+
+// The fork path's admission. A clone is a sandbox, so it is admitted like one — but the
+// numbers come from the image it resumes rather than from a template, and the whole fork
+// is decided before any of it exists.
+
+// forkFixture is the checkpoint fixture with this node's limits set. The limits are read
+// when a fork is admitted, so a test sets them on the manager the way the daemon's
+// configuration does.
+func forkFixture(t *testing.T, tweak func(*Quota)) *checkpointFixture {
+	t.Helper()
+
+	c := newCheckpointFixture(t)
+	stubQuiesce(t, nil)
+	quota := DefaultQuota()
+	if tweak != nil {
+		tweak(&quota)
+	}
+	c.manager.cfg.Quota = quota
+	return c
+}
+
+// TestForkIsRefusedBeforeItCreatesAnything pins the promise a refusal makes on the fork
+// path too: the parent already holds the owner's whole share, so no clone is made — and
+// nothing a clone would have taken exists, not even the staged images the launch reads.
+func TestForkIsRefusedBeforeItCreatesAnything(t *testing.T) {
+	c := forkFixture(t, func(q *Quota) { q.MaxPerOwner = 1 })
+	c.readySandbox(t, "sbx-1")
+	_, err := c.manager.Checkpoint(context.Background(), "sbx-1", "c1")
+	require.NoError(t, err)
+	require.Equal(t, []string{"sbx-1"}, c.storeIDs(t), "the parent is the one sandbox that counts")
+
+	_, err = c.manager.Fork(context.Background(), ForkRequest{Checkpoint: "c1", IDs: []string{"clone-1"}})
+	require.Error(t, err)
+	var quota *QuotaError
+	require.ErrorAs(t, err, &quota)
+	assert.Equal(t, QuotaResourceOwnerSandboxes, quota.Resource)
+	assert.Equal(t, int64(1), quota.Used, "the parent is what filled the owner's share")
+	assert.Equal(t, DefaultQuotaRetryAfter, quota.RetryAfter)
+
+	// Nothing of the refused fork: no record, no namespace, no VM, no disk and no staged
+	// image under the rootfs directory.
+	assert.Equal(t, []string{"sbx-1"}, c.storeIDs(t))
+	assert.Empty(t, c.network.attached, "a refused fork attaches no namespace")
+	assert.Empty(t, c.launcher.requests, "a refused fork launches no VM")
+	_, statErr := os.Stat(filepath.Join(c.manager.cfg.RootfsDir, DirName, "clone-1.ext4"))
+	assert.True(t, os.IsNotExist(statErr), "a refused fork materializes no disk")
+	staged, globErr := filepath.Glob(filepath.Join(c.manager.cfg.RootfsDir, DirName, ".fork-images-*"))
+	require.NoError(t, globErr)
+	assert.Empty(t, staged, "a refused fork stages no images")
+
+	// The checkpoint it was refused for is untouched: a fork reads what it came from.
+	stored, found, err := c.manager.cfg.Checkpoints.Get("c1")
+	require.NoError(t, err)
+	require.True(t, found, "the refusal does not withdraw the checkpoint")
+	assert.Equal(t, "sbx-1", stored.Sandbox)
+}
+
+// TestForkIsAdmittedAsAWholeOrNotAtAll pins the accounting: the ledger advances as each
+// clone is admitted, so a fork of three that would not fit is refused as a whole, before
+// any of the three exists. A check per clone against the node as it was measured would
+// admit every clone of any size.
+func TestForkIsAdmittedAsAWholeOrNotAtAll(t *testing.T) {
+	// The parent is 512 MiB and each clone is the same, so 1536 MiB is the parent plus
+	// exactly two clones.
+	admitTwo := func(t *testing.T) *checkpointFixture {
+		c := forkFixture(t, func(q *Quota) { q.MemoryMB = 1536 })
+		c.readySandbox(t, "sbx-1")
+		_, err := c.manager.Checkpoint(context.Background(), "sbx-1", "c1")
+		require.NoError(t, err)
+		return c
+	}
+
+	t.Run("a fork that fits is admitted whole", func(t *testing.T) {
+		c := admitTwo(t)
+		forks, err := c.manager.Fork(context.Background(), ForkRequest{Checkpoint: "c1", Count: 2})
+		require.NoError(t, err)
+		assert.Len(t, forks, 2)
+	})
+
+	t.Run("a fork that does not fit is refused whole", func(t *testing.T) {
+		c := admitTwo(t)
+		forks, err := c.manager.Fork(context.Background(), ForkRequest{
+			Checkpoint: "c1", Count: 3, IDs: []string{"clone-1", "clone-2", "clone-3"},
+		})
+		require.Error(t, err)
+		assert.Empty(t, forks, "a refused fork returns no clone to reason about")
+
+		var quota *QuotaError
+		require.ErrorAs(t, err, &quota)
+		assert.Equal(t, QuotaResourceNodeMemoryMB, quota.Resource)
+		assert.Equal(t, int64(1536), quota.Limit)
+		assert.Equal(t, int64(1536), quota.Used, "the two clones that fit are counted against the third")
+		assert.Equal(t, int64(512), quota.Requested)
+
+		// The refused fork left nothing, including the two clones that would have fit.
+		assert.Equal(t, []string{"sbx-1"}, c.storeIDs(t))
+		assert.Empty(t, c.network.attached)
+		assert.Empty(t, c.launcher.requests)
+	})
+}
+
+// TestForkReservesTheCheckpointsDiskNotTheTemplates pins where a clone's disk reservation
+// comes from: the checkpoint's disk, which is the image the clone copies. The fixture's
+// template image is bigger than this node's whole budget, so a reservation taken from the
+// wrong image would refuse a fork that has room.
+func TestForkReservesTheCheckpointsDiskNotTheTemplates(t *testing.T) {
+	c := forkFixture(t, func(q *Quota) { q.DiskMB = 1 })
+	c.readySandbox(t, "sbx-1")
+	_, err := c.manager.Checkpoint(context.Background(), "sbx-1", "c1")
+	require.NoError(t, err)
+
+	template, err := os.Stat(filepath.Join(c.manager.cfg.GoldenDir, "golden-base-1.0.0.ext4"))
+	require.NoError(t, err)
+	require.Greater(t, template.Size(), int64(1)<<20,
+		"the fixture's template is bigger than this node's entire disk budget")
+
+	forks, err := c.manager.Fork(context.Background(), ForkRequest{Checkpoint: "c1", Count: 2})
+	require.NoError(t, err, "a clone copies the checkpoint's disk, not the template's artifact")
+	assert.Len(t, forks, 2)
+}
+
+// TestForkFromSandboxIsRefusedBeforeItTakesTheCheckpoint pins the order of the one-step
+// form: the checkpoint it mints writes the node's disk before any clone exists, so a fork
+// the node will not take is refused before the image is taken — no image, and no chunk of
+// one, for a caller that never got a clone.
+func TestForkFromSandboxIsRefusedBeforeItTakesTheCheckpoint(t *testing.T) {
+	c := forkFixture(t, func(q *Quota) { q.MaxPerOwner = 1 })
+	c.readySandbox(t, "sbx-1")
+
+	_, err := c.manager.ForkFromSandbox(context.Background(), "sbx-1", ForkRequest{})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrQuota)
+
+	records, _, err := c.manager.cfg.Checkpoints.List()
+	require.NoError(t, err)
+	assert.Empty(t, records, "the refused fork took no checkpoint")
+	assert.Zero(t, chunkFiles(t, c.blobs.Root()), "and wrote no chunk of a memory image")
+	assert.Equal(t, []string{"sbx-1"}, c.storeIDs(t))
+}
+
+// storeIDs is the node's sandboxes by ID, sorted, for the tests that assert on what a
+// refusal left behind.
+func (c *checkpointFixture) storeIDs(t *testing.T) []string {
+	t.Helper()
+	records, _, err := c.store.List()
+	require.NoError(t, err)
+	ids := make([]string, 0, len(records))
+	for _, rec := range records {
+		ids = append(ids, rec.ID)
+	}
+	sort.Strings(ids)
+	return ids
 }
