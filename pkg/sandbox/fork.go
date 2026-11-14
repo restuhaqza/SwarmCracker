@@ -477,6 +477,32 @@ type ForkRequest struct {
 // running now rather than of an image it named earlier; the checkpoint it takes is
 // recorded under a minted name and is visible in a listing like any other.
 func (m *Manager) ForkFromSandbox(ctx context.Context, sandboxID string, req ForkRequest) ([]Record, error) {
+	// Taking the checkpoint is part of this call, and a checkpoint writes the node's disk —
+	// its memory image is a gigabyte of chunks — before any clone exists. So the fork is
+	// admitted first: a refused fork must not leave an image behind for a caller that
+	// never got a clone. Fork checks again, exactly, against the checkpoint it resumes.
+	//
+	// The pre-check is skipped for a sandbox the fork could not use anyway: a sandbox
+	// that is not ready, or that this node has no disk for, is Checkpoint's to refuse,
+	// and it should be the one to say so.
+	if rec, err := m.Get(sandboxID); err != nil {
+		return nil, err
+	} else if rec.State == StateReady && rec.Disk != "" {
+		count := req.Count
+		if count == 0 {
+			count = 1
+		}
+		if count > 0 {
+			owner := strings.TrimSpace(req.Owner)
+			if owner == "" {
+				owner = rec.Owner
+			}
+			if err := m.admitClones(m.size(rec.VCPUs, rec.MemoryMB), rec.Disk, count, owner); err != nil {
+				return nil, err
+			}
+		}
+	}
+
 	chk, err := m.Checkpoint(ctx, sandboxID, "")
 	if err != nil {
 		return nil, err
@@ -530,16 +556,23 @@ func (m *Manager) Fork(ctx context.Context, req ForkRequest) ([]Record, error) {
 		return nil, fmt.Errorf("checkpoint %q: %w", chk.Name, err)
 	}
 
+	owner := strings.TrimSpace(req.Owner)
+	if owner == "" {
+		owner = chk.Owner
+	}
+
+	// Every clone is admitted, as a whole, before a byte of the fork is materialized: the
+	// images are staged and each clone gets a disk, so a fork the node cannot take must be
+	// refused while it still holds nothing at all.
+	if err := m.admitClones(m.size(chk.VCPUs, chk.MemoryMB), chk.Disk, count, owner); err != nil {
+		return nil, err
+	}
+
 	staged, err := m.stageCheckpointImages(ctx, chk)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = os.RemoveAll(staged.dir) }()
-
-	owner := strings.TrimSpace(req.Owner)
-	if owner == "" {
-		owner = chk.Owner
-	}
 
 	forks := make([]Record, 0, count)
 	for i := 0; i < count; i++ {
