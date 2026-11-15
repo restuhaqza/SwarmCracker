@@ -169,8 +169,19 @@ written and before the first resource is allocated, so a rejection leaves no rec
 network namespace, no disk and no VM — there is nothing for `sandbox rm` to clean up and
 nothing for the next `sandbox ls` to show.
 
-Admission covers `sandbox create`. A fork creates sandboxes too and is not yet counted
-against the limit; that lands with the fork-specific accounting.
+A **fork** is admitted the same way, and the numbers come from the image it resumes
+rather than from a template. Each clone occupies the memory that image is — a memory
+image is exactly as large as the guest's memory, which is why a clone does not choose
+its own size — and takes a copy of the checkpoint's disk. The chunks the memory image is
+stored in are *not* counted: they belong to the checkpoint and every clone shares them,
+so a fork adds no chunk bytes.
+
+The whole fork is admitted or none of it is, and it is decided before anything exists:
+the ledger advances clone by clone, so a fork of three is refused when the third does
+not fit, and at that moment there is no record, no namespace, no disk and no staged
+image. `sandbox fork <sandbox>` mints its checkpoint first, so its check runs *before*
+the image is taken: a refused fork does not leave a gigabyte of chunks behind either.
+The refusal names the same limits as a create's and carries the same `Retry-After`.
 
 ## Exec
 
@@ -468,7 +479,7 @@ These are the boundaries of the first sandbox slice, not gaps in it:
 - **No file copy, no exposure, no preview proxy, no pool and no cluster-wide quota.**
   `sandbox cp`, `sandbox expose`, the preview proxy, warm pools and per-tenant quotas
   that span nodes are later slices. The quota above is one node's own admission, checked
-  for `sandbox create`; a fork is not yet counted against it. There is no warm pool, so
+  for both `sandbox create` and a fork. There is no warm pool, so
   the ready time above is a cold boot.
 - **Exec runs as the guest agent's user** (root inside the sandbox). A per-sandbox
   `--user` is not part of this slice; the isolation boundary is the microVM, not the
