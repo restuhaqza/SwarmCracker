@@ -325,12 +325,13 @@ func checkSandboxSelectorScopes(scopes []string, selectors *SandboxSelectors) er
 	}
 	for _, scope := range scopes {
 		switch Scope(scope) {
-		case ScopeSandboxesRead, ScopeSandboxesExec, ScopeSandboxesWrite, ScopeSandboxesToken:
+		case ScopeSandboxesRead, ScopeSandboxesExec, ScopeSandboxesWrite, ScopeSandboxesToken,
+			ScopeSandboxesFiles:
 			return nil
 		}
 	}
 	return output.NewError(output.CodeInvalid,
-		"a sandbox selector requires a sandbox scope (sandboxes:read, sandboxes:exec, sandboxes:write or sandboxes:token)")
+		"a sandbox selector requires a sandbox scope (sandboxes:read, sandboxes:exec, sandboxes:files, sandboxes:write or sandboxes:token)")
 }
 
 // RevokeSandbox deletes every token whose sandbox selector names sandboxID, and

@@ -17,6 +17,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -46,6 +47,15 @@ const (
 	// sandbox that is coming up. The exec stream is not covered by it — a command may
 	// take as long as its own context allows.
 	sandboxClientTimeout = 10 * time.Minute
+
+	// octetStreamMediaType (attach.go) and tarMediaType are the two shapes a sandbox
+	// file takes, in both directions: one file's bytes, and a tar archive of a tree.
+	// The node chooses the operation of a write from exactly this header.
+	tarMediaType = "application/x-tar"
+	// sandboxFileKindHeader is where a read says which of the two it answered with,
+	// so a caller that stores the body knows what it stored without inferring it from
+	// a media type.
+	sandboxFileKindHeader = "X-Swarmcracker-File-Kind"
 )
 
 // SandboxSocketPath resolves the sandbox daemon's control socket: the explicit path,
@@ -388,6 +398,193 @@ func (c *SandboxClient) fork(ctx context.Context, segments []string, req v1.Sand
 		return v1.SandboxList{}, err
 	}
 	return doc, nil
+}
+
+// SandboxFileKind is the shape a guest path was served in, as the node reported it: the
+// value of the response's X-Swarmcracker-File-Kind header, which is also what its media
+// type says.
+type SandboxFileKind string
+
+const (
+	// SandboxFileKindFile is a regular file: the body is that file's bytes.
+	SandboxFileKindFile SandboxFileKind = "file"
+	// SandboxFileKindDir is a directory: the body is a tar archive of it, whose names are
+	// relative to the guest's file root.
+	SandboxFileKindDir SandboxFileKind = "dir"
+)
+
+// SandboxFileQuery is how one file request names its path, and the mode a write gives a
+// file. It is a struct rather than two parameters so a caller cannot pass them in the
+// wrong order.
+type SandboxFileQuery struct {
+	// Path is the guest path: relative to the guest's workspace root, which the guest
+	// agent confines every file operation to.
+	Path string
+	// Mode is the permissions of a written file, and is ignored for a read and for an
+	// archive. Zero means the node's default (0644).
+	Mode uint32
+}
+
+// GetSandboxFile opens one guest path in a sandbox for reading, and reports the shape the
+// node served it in: a regular file's bytes, or a tar archive of a directory. The caller
+// closes the reader.
+//
+// The shape is known before any bytes are read, which is what lets a caller choose where
+// they go: a file's bytes and a tree's archive want different destinations, and a stream has
+// only one direction. It is a streaming call, so a tree of any size costs a chunk of memory
+// rather than its own size, and the caller's context bounds it rather than the generic
+// request timeout.
+func (c *SandboxClient) GetSandboxFile(ctx context.Context, id string, query SandboxFileQuery) (SandboxFileKind, io.ReadCloser, error) {
+	if err := validateSegments([]string{id}); err != nil {
+		return "", nil, err
+	}
+	if strings.TrimSpace(query.Path) == "" {
+		return "", nil, output.NewError(output.CodeInvalid,
+			"a guest path is required: name the file or directory to copy")
+	}
+
+	req, err := c.request(ctx, http.MethodGet, []string{"v1", "sandboxes", id, "files"}, nil)
+	if err != nil {
+		return "", nil, err
+	}
+	req.URL.RawQuery = url.Values{"path": {query.Path}}.Encode()
+	// A file read is not a document: the bytes are the answer, in whichever of the two
+	// shapes the guest reported.
+	req.Header.Set("Accept", octetStreamMediaType+", "+tarMediaType)
+
+	resp, err := c.stream.Do(req)
+	if err != nil {
+		return "", nil, c.connectError("GET /v1/sandboxes/"+id+"/files", err)
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		defer func() { _ = resp.Body.Close() }()
+		errorBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+		return "", nil, decodeErrorDocument(http.MethodGet,
+			"/v1/sandboxes/"+id+"/files", resp.StatusCode, resp.Status, errorBody)
+	}
+
+	return SandboxFileKind(resp.Header.Get(sandboxFileKindHeader)), resp.Body, nil
+}
+
+// PutSandboxFile writes one regular file into a sandbox from r, and returns what the guest
+// wrote. The mode is the guest file's permissions; zero means the node's default.
+func (c *SandboxClient) PutSandboxFile(ctx context.Context, id string, query SandboxFileQuery, r io.Reader) (v1.SandboxFileWrite, error) {
+	return c.putSandboxFile(ctx, id, query, r, octetStreamMediaType)
+}
+
+// PutSandboxTree streams a tar archive into a sandbox, and returns what the guest wrote.
+//
+// The archive's names are relative to the guest's file root — which is what GetSandboxFile
+// produces for a directory — and every entry must be the named directory or something under
+// it. A template whose agent predates the operation answers 501 with details.capability
+// "untar"; a single file still arrives through PutSandboxFile.
+func (c *SandboxClient) PutSandboxTree(ctx context.Context, id string, query SandboxFileQuery, r io.Reader) (v1.SandboxFileWrite, error) {
+	return c.putSandboxFile(ctx, id, query, r, tarMediaType)
+}
+
+// putSandboxFile is the write both shapes take: the media type chooses which operation the
+// node runs, so it is the one thing that differs.
+func (c *SandboxClient) putSandboxFile(ctx context.Context, id string, query SandboxFileQuery, r io.Reader, contentType string) (v1.SandboxFileWrite, error) {
+	if err := validateSegments([]string{id}); err != nil {
+		return v1.SandboxFileWrite{}, err
+	}
+	if strings.TrimSpace(query.Path) == "" {
+		return v1.SandboxFileWrite{}, output.NewError(output.CodeInvalid,
+			"a guest path is required: name the file or directory to write")
+	}
+
+	req, err := c.request(ctx, http.MethodPut, []string{"v1", "sandboxes", id, "files"}, nil)
+	if err != nil {
+		return v1.SandboxFileWrite{}, err
+	}
+	values := url.Values{"path": {query.Path}}
+	if query.Mode != 0 {
+		values.Set("mode", fmt.Sprintf("%04o", query.Mode))
+	}
+	req.URL.RawQuery = values.Encode()
+	req.Header.Set("Content-Type", contentType)
+	req.Header.Set("Accept", mediaTypeV1)
+	if r != nil {
+		req.Body = io.NopCloser(r)
+		// The length is not known here: a caller streams a workspace through a pipe
+		// as often as it hands over a file, and the node streams the body either way.
+		req.ContentLength = -1
+	}
+
+	resp, err := c.stream.Do(req)
+	if err != nil {
+		return v1.SandboxFileWrite{}, c.connectError("PUT /v1/sandboxes/"+id+"/files", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	payload, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	if err != nil {
+		return v1.SandboxFileWrite{}, c.connectError("PUT /v1/sandboxes/"+id+"/files", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return v1.SandboxFileWrite{}, decodeErrorDocument(http.MethodPut,
+			"/v1/sandboxes/"+id+"/files", resp.StatusCode, resp.Status, payload)
+	}
+
+	var doc v1.SandboxFileWrite
+	if err := json.Unmarshal(payload, &doc); err != nil {
+		return v1.SandboxFileWrite{}, output.NewErrorf(output.CodeInternal,
+			"PUT /v1/sandboxes/%s/files: decode response: %v", id, err)
+	}
+	return doc, nil
+}
+
+// SandboxStatus reads a sandbox and what its guest says about itself: its identity, kernel,
+// resources and toolchain, and its own view of its network. Both come from the guest agent's
+// own operations rather than from parsing a command's output, so a template needs no shell
+// for it.
+func (c *SandboxClient) SandboxStatus(ctx context.Context, id string) (v1.SandboxStatus, error) {
+	if err := validateSegments([]string{id}); err != nil {
+		return v1.SandboxStatus{}, err
+	}
+	var doc v1.SandboxStatus
+	if err := c.do(ctx, http.MethodGet, []string{"v1", "sandboxes", id, "status"}, nil, &doc); err != nil {
+		return v1.SandboxStatus{}, err
+	}
+	return doc, nil
+}
+
+// SandboxLogs streams a sandbox's serial console into w, as the node recorded it.
+//
+// The console is the VMM's record of the guest's serial port, not the guest agent's: it
+// starts before the agent is up and survives a boot that failed, so a sandbox that is not
+// ready still has one.
+func (c *SandboxClient) SandboxLogs(ctx context.Context, id string, w io.Writer) error {
+	if err := validateSegments([]string{id}); err != nil {
+		return err
+	}
+
+	req, err := c.request(ctx, http.MethodGet, []string{"v1", "sandboxes", id, "logs"}, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Accept", "text/plain")
+
+	resp, err := c.stream.Do(req)
+	if err != nil {
+		return c.connectError("GET /v1/sandboxes/"+id+"/logs", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		errorBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+		return decodeErrorDocument(http.MethodGet,
+			"/v1/sandboxes/"+id+"/logs", resp.StatusCode, resp.Status, errorBody)
+	}
+	if w == nil {
+		return nil
+	}
+	if _, err := io.Copy(w, resp.Body); err != nil {
+		return output.NewErrorf(output.CodeUnavailable,
+			"read the body of /v1/sandboxes/%s/logs: %v", id, err)
+	}
+	return nil
 }
 
 // do runs one request that answers with a JSON document.

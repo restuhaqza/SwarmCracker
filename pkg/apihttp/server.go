@@ -389,6 +389,17 @@ func (s *Server) routes() {
 	)
 	s.handleRoutes("/v1/sandboxes/{id}/exec",
 		streamPost(ScopeSandboxesExec, s.execSandbox))
+	// Files, console and status all reach inside one sandbox's guest, so each requires
+	// the caller's sandbox selectors to name it (see sandbox_files.go). The file routes
+	// implement path (and mode, for a write) and nothing else, so a typo is a 400.
+	s.handleRoutes("/v1/sandboxes/{id}/files",
+		accepts(read(ScopeSandboxesFiles, s.getSandboxFile), "path"),
+		accepts(write(http.MethodPut, ScopeSandboxesFiles, s.putSandboxFile), "path", "mode"),
+	)
+	s.handleRoutes("/v1/sandboxes/{id}/logs",
+		read(ScopeSandboxesRead, s.getSandboxLogs))
+	s.handleRoutes("/v1/sandboxes/{id}/status",
+		read(ScopeSandboxesRead, s.getSandboxStatus))
 	s.handleRoutes("/v1/sandboxes/{id}/tokens",
 		write(http.MethodPost, ScopeSandboxesToken, s.createSandboxToken))
 

@@ -466,6 +466,19 @@ class SandboxDocument(TypedDict):
     schemaVersion: Literal[1]
     kind: Literal["Sandbox"]
 
+class SandboxFileWrite(TypedDict):
+    """What a write into a sandbox's workspace did, as the guest reports it: the bytes it wrote and, for a tree, how many entries it wrote and which entries it refused."""
+    schemaVersion: Literal[1]
+    kind: Literal["SandboxFileWrite"]
+    # The guest path the bytes were written to, exactly as the caller named it.
+    path: str
+    # The file bytes the guest wrote: a copied file's size, or the sum of the files in an archive. It is what landed, not what was sent.
+    bytes: int
+    # How many entries an archive wrote. Absent for a single file.
+    entries: NotRequired[int]
+    # The archive entries the guest did not write, and why.
+    warnings: NotRequired[list[str]]
+
 class SandboxFork(TypedDict):
     # How many clones to create. Absent means one.
     count: NotRequired[int]
@@ -490,6 +503,41 @@ class SandboxFreed(TypedDict):
     recordRemoved: NotRequired[bool]
     apiTokensRevoked: NotRequired[int]
 
+class SandboxGuestInfo(TypedDict):
+    """What the guest knows about itself, read from its own /proc and /etc/os-release rather than inferred from the template."""
+    hostname: NotRequired[str]
+    # The guest's machine id. The post-restore hook rewrites it, so two clones of one checkpoint differ here.
+    machineId: NotRequired[str]
+    # The kernel the guest is running.
+    kernelRelease: NotRequired[str]
+    kernelVersion: NotRequired[str]
+    # The guest's architecture, as its kernel names it.
+    machine: NotRequired[str]
+    # From the guest's /etc/os-release; empty in a template without one.
+    osName: NotRequired[str]
+    osId: NotRequired[str]
+    cpus: NotRequired[int]
+    memoryTotalBytes: NotRequired[int]
+    # The guest's own uptime. A restore rewrites it, so it measures the running guest and not the checkpoint it came from.
+    uptimeSeconds: NotRequired[float]
+    # The agent protocol version the guest speaks.
+    protocol: NotRequired[str]
+    agentVersion: NotRequired[str]
+    # The exact agent build, normally the commit.
+    buildId: NotRequired[str]
+    # This boot's identity; it changes on reboot and on restore.
+    bootId: NotRequired[str]
+    # The tools the template's own directories hold, sorted by name. It is how a caller tells whether a template ships a shell or tar.
+    tools: NotRequired[list[str]]
+
+class SandboxGuestNet(TypedDict):
+    """The guest's own view of its network."""
+    interfaces: list[SandboxNetInterface]
+    routes: list[SandboxNetRoute]
+    # The guest's /etc/resolv.conf nameservers. An empty list means the guest has none configured, not that the read failed.
+    resolvers: list[str]
+    search: NotRequired[list[str]]
+
 class SandboxList(TypedDict):
     schemaVersion: Literal[1]
     kind: Literal["SandboxList"]
@@ -499,11 +547,96 @@ class SandboxList(TypedDict):
     # The checkpoint these sandboxes were forked from. Set by the fork routes, which either take a checkpoint themselves (and mint its name) or are given one: a caller that cannot see the name cannot free the image the fork left behind.
     checkpoint: NotRequired[str]
 
+class SandboxNetInterface(TypedDict):
+    name: str
+    # The kernel's interface index, which a route's device refers to.
+    index: int
+    mac: NotRequired[str]
+    mtu: NotRequired[int]
+    up: bool
+    # Set on lo: a sandbox's loopback is its own.
+    loopback: NotRequired[bool]
+    # The interface's addresses in CIDR form, sorted.
+    addresses: NotRequired[list[str]]
+
+class SandboxNetRoute(TypedDict):
+    family: Literal["ipv4", "ipv6"]
+    destination: str
+    # The next hop; absent for an on-link route.
+    gateway: NotRequired[str]
+    device: NotRequired[str]
+    metric: NotRequired[int]
+
 class SandboxRemoval(TypedDict):
     schemaVersion: Literal[1]
     kind: Literal["SandboxRemoval"]
     sandbox: str
     freed: SandboxFreed
+
+class SandboxStatus(TypedDict):
+    id: str
+    # created is a sandbox being built (or a create that died), ready is one whose guest agent answered its hello — the only state in which it can run a command — failed is one the node could not make usable or lost (reason says which), and stopped is one the node has ended. A removed sandbox is not listed: its record is deleted once everything it held is freed.
+    state: Literal["created", "ready", "failed", "stopped"]
+    # The resolved template reference, name@version.
+    template: NotRequired[str]
+    owner: NotRequired[str]
+    createdAt: NotRequired[str]
+    updatedAt: NotRequired[str]
+    # When the guest agent answered. Absent until it does.
+    readyAt: NotRequired[str]
+    # When the node last saw the sandbox used; the idle TTL is measured from it.
+    lastActiveAt: NotRequired[str]
+    # How long the sandbox may sit unused before the reaper takes it back. 0 means never.
+    idleTtlSeconds: NotRequired[int]
+    # Why a sandbox is failed. Absent in every other state.
+    reason: NotRequired[str]
+    guestIp: NotRequired[str]
+    mac: NotRequired[str]
+    # The allowlist the sandbox was created with, as requested; empty is egress none.
+    egress: NotRequired[list[str]]
+    # How the sandbox's own disk was materialized from the template.
+    diskCopy: NotRequired[Literal["reflink", "sparse", "full"]]
+    agentVersion: NotRequired[str]
+    bootId: NotRequired[str]
+    schemaVersion: Literal[1]
+    kind: Literal["SandboxStatus"]
+    info: SandboxStatusInfo
+    net: SandboxStatusNet
+
+class SandboxStatusInfo(TypedDict):
+    """What the guest reported about itself."""
+    hostname: NotRequired[str]
+    # The guest's machine id. The post-restore hook rewrites it, so two clones of one checkpoint differ here.
+    machineId: NotRequired[str]
+    # The kernel the guest is running.
+    kernelRelease: NotRequired[str]
+    kernelVersion: NotRequired[str]
+    # The guest's architecture, as its kernel names it.
+    machine: NotRequired[str]
+    # From the guest's /etc/os-release; empty in a template without one.
+    osName: NotRequired[str]
+    osId: NotRequired[str]
+    cpus: NotRequired[int]
+    memoryTotalBytes: NotRequired[int]
+    # The guest's own uptime. A restore rewrites it, so it measures the running guest and not the checkpoint it came from.
+    uptimeSeconds: NotRequired[float]
+    # The agent protocol version the guest speaks.
+    protocol: NotRequired[str]
+    agentVersion: NotRequired[str]
+    # The exact agent build, normally the commit.
+    buildId: NotRequired[str]
+    # This boot's identity; it changes on reboot and on restore.
+    bootId: NotRequired[str]
+    # The tools the template's own directories hold, sorted by name. It is how a caller tells whether a template ships a shell or tar.
+    tools: NotRequired[list[str]]
+
+class SandboxStatusNet(TypedDict):
+    """How the guest sees its own network."""
+    interfaces: list[SandboxNetInterface]
+    routes: list[SandboxNetRoute]
+    # The guest's /etc/resolv.conf nameservers. An empty list means the guest has none configured, not that the read failed.
+    resolvers: list[str]
+    search: NotRequired[list[str]]
 
 class SandboxToken(TypedDict):
     schemaVersion: Literal[1]

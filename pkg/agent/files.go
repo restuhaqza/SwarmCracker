@@ -122,10 +122,12 @@ type Listing struct {
 	Truncated bool `json:"truncated"`
 }
 
-// TarSummary is the answer to `tar`, sent on the frame that ends the archive.
+// TarSummary is the answer to `tar` and to `untar`, sent on the frame that ends the stream.
 type TarSummary struct {
-	// Entries is how many entries the archive carries, and Bytes how many bytes
-	// of archive were streamed.
+	// Entries is how many entries the archive carried: read out of the tree for `tar`,
+	// written into it for `untar`. Bytes is the size of the archive stream in the `tar`
+	// direction and the number of file bytes written in the `untar` direction, so each
+	// is what that operation moved rather than what the caller asked for.
 	Entries int   `json:"entries"`
 	Bytes   int64 `json:"bytes"`
 	// Warnings names the entries the archive does not carry, and why. It is

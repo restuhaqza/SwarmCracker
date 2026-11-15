@@ -22,11 +22,13 @@ package apihttp
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/restuhaqza/swarmcracker/pkg/agent"
 	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
 	"github.com/restuhaqza/swarmcracker/pkg/output"
 	"github.com/restuhaqza/swarmcracker/pkg/sandbox"
@@ -68,6 +70,26 @@ type Sandboxes interface {
 	// returns is the pre-flight (no such sandbox, not ready); everything after the
 	// dial is written to w.
 	ServeExec(ctx context.Context, id string, w http.ResponseWriter, r *http.Request) error
+	// DescribeFile reports what one guest path is, so a caller can choose the
+	// operation a copy of it takes before that copy's response starts.
+	DescribeFile(ctx context.Context, id, guestPath string) (sandbox.File, error)
+	// SendFile streams one guest path into w: a regular file's bytes, or a tar
+	// archive for a directory.
+	SendFile(ctx context.Context, id, guestPath string, kind sandbox.FileKind, w io.Writer) (agent.TarSummary, error)
+	// PutFile streams r into one guest path as a regular file, and reports how many
+	// bytes the guest wrote. Zero mode means the guest's default.
+	PutFile(ctx context.Context, id, guestPath string, mode uint32, r io.Reader) (int64, error)
+	// ExtractTree streams the tar archive r carries into the tree one guest path
+	// names. A template whose agent predates the operation refuses it with
+	// sandbox.ErrMissingCapability.
+	ExtractTree(ctx context.Context, id, guestPath string, r io.Reader) (agent.TarSummary, error)
+	// Status reports what one sandbox is, from the guest's own answer about itself
+	// rather than from parsing a command's output.
+	Status(ctx context.Context, id string) (sandbox.Status, error)
+	// ServerLogPath is where one sandbox's serial console is written, or an error
+	// saying why there is none: a sandbox this node does not have, one that has
+	// written none yet, or a node that records no console at all.
+	ServerLogPath(id string) (string, error)
 }
 
 // sandboxAuditAction is the audit action recorded for a sandbox's exec.
@@ -253,6 +275,14 @@ func (s *Server) execSandbox(w http.ResponseWriter, r *http.Request) {
 // names this sandbox. It cannot exec in another sandbox (the selector), cannot create
 // or remove a sandbox (no sandboxes:write) and cannot mint another token (no
 // sandboxes:token), and each of those refusals says so.
+//
+// It deliberately does not hold sandboxes:files, even though copying a file into a
+// sandbox is the same power as exec'ing in it: adding a capability to a credential that
+// can leak is a decision that needs a user of it, not a symmetry argument, and no caller
+// has needed a sandbox-scoped token to copy yet. The boundary is written down here and in
+// the sandboxes guide so it reads as a decision rather than as an omission; a caller that
+// needs it today uses a token that holds sandboxes:files (runner and up) or the local
+// socket, and minting one with it is a one-line change when something needs it.
 func (s *Server) createSandboxToken(w http.ResponseWriter, r *http.Request) {
 	if !s.sandboxesAvailable(w, r) {
 		return
@@ -416,6 +446,15 @@ func sandboxAPIError(err error) error {
 	}
 
 	switch {
+	case errors.Is(err, sandbox.ErrMissingCapability):
+		// The template's agent does not advertise the operation. It is a property of the
+		// template, not of this node: a single file still arrives through the operation
+		// that predates it, so the answer names the capability and leaves the caller a
+		// way forward.
+		missing := &sandbox.MissingCapabilityError{}
+		errors.As(err, &missing)
+		return output.NewError(output.CodeNotImplemented, err.Error()).
+			WithDetails(map[string]any{"reason": "template_capability_missing", "capability": missing.Capability})
 	case errors.Is(err, sandbox.ErrNotImplemented):
 		// Configured without checkpoints: a capability this node does not serve, said so
 		// explicitly. It must not surface as an internal error, and it must not look like

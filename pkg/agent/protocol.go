@@ -86,6 +86,15 @@ const (
 	// sync and a filesystem freeze before the images are taken, a thaw after
 	// (quiesce.go). Only the guest can do it, which is why it is an operation.
 	CapQuiesce = "quiesce"
+	// CapUntar is the reverse of tar: a caller streams an archive and the guest writes
+	// the tree it carries into the workspace (untar.go).
+	//
+	// It is advertised as an optional capability and deliberately kept out of
+	// RequiredAgentCaps (pkg/golden): a template whose agent predates it keeps working
+	// for everything else, and the only thing it cannot do — have a directory written
+	// into it — is refused per call with unsupported_op rather than making every
+	// installed template unusable until it is rebuilt.
+	CapUntar = "untar"
 )
 
 // capabilities is the closed set of operations this agent build implements. It
@@ -94,7 +103,7 @@ const (
 // would fail after the host committed to it.
 var capabilities = []string{
 	CapHello, CapExec, CapPut, CapGet, CapMetrics, CapPrepare,
-	CapInfo, CapNet, CapStat, CapList, CapTar, CapActivity, CapQuiesce,
+	CapInfo, CapNet, CapStat, CapList, CapTar, CapUntar, CapActivity, CapQuiesce,
 }
 
 // Capabilities returns the operations this agent build advertises. The result is

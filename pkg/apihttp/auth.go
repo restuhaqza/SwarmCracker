@@ -64,6 +64,13 @@ const (
 	ScopeSandboxesRead  Scope = "sandboxes:read"
 	ScopeSandboxesWrite Scope = "sandboxes:write"
 	ScopeSandboxesExec  Scope = "sandboxes:exec"
+	// ScopeSandboxesFiles may read a file or a tree out of a sandbox's workspace and
+	// write one into it. It sits beside sandboxes:exec and is runner-level for the same
+	// reason: writing a file into a sandbox is the power to run code in it, and reading
+	// one file can be what reading /etc/shadow would be. The routes that take it also
+	// require a sandbox selector that names the sandbox, so a token narrowed to one
+	// sandbox cannot copy out of another.
+	ScopeSandboxesFiles Scope = "sandboxes:files"
 	// ScopeSandboxesCheckpoints may take a checkpoint of a sandbox, read the node's
 	// checkpoints, fork from one and forget one. It is the checkpoint half of the
 	// sandbox surface and it is operator-level like sandboxes:write: a checkpoint
@@ -93,7 +100,7 @@ var readerScopes = []Scope{
 
 var runnerScopes = concatScopes(readerScopes,
 	ScopeTasksExec, ScopeTasksFiles, ScopeTasksSnapshots,
-	ScopeSandboxesExec)
+	ScopeSandboxesExec, ScopeSandboxesFiles)
 
 var operatorScopes = concatScopes(runnerScopes,
 	ScopeServicesWrite, ScopeNetworksWrite, ScopeConfigsWrite,

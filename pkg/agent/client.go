@@ -906,6 +906,75 @@ func (c *Client) CopyTo(ctx context.Context, guestPath string, src io.Reader, mo
 	}
 }
 
+// Untar streams the tar archive r carries into the tree guestPath names, and returns
+// what the guest wrote.
+//
+// guestPath is the directory the archive must stay inside, relative to the file root, and
+// the archive's own names are relative to that root — which is what Tar produces, so the
+// archive from a Tar of the same path describes exactly the same files. A guest whose
+// agent predates the operation refuses it with unsupported_op and advertises no untar, so
+// a caller can ask before sending a byte.
+func (c *Client) Untar(ctx context.Context, guestPath string, r io.Reader) (TarSummary, error) {
+	if c.consumed {
+		return TarSummary{}, errConsumed
+	}
+	if guestPath == "" {
+		return TarSummary{}, fmt.Errorf("untar: empty guest path")
+	}
+	if err := c.requireCap(CapUntar); err != nil {
+		return TarSummary{}, err
+	}
+	stop := c.watchContext(ctx)
+	defer stop()
+
+	req := Request{Op: CapUntar, Path: guestPath}
+	if err := c.begin(ctx, &req); err != nil {
+		return TarSummary{}, err
+	}
+	if err := c.write(req); err != nil {
+		return TarSummary{}, fmt.Errorf("untar: send request: %w", err)
+	}
+
+	buf := make([]byte, fileChunkSize)
+	for {
+		n, err := r.Read(buf)
+		if n > 0 {
+			if werr := c.write(Message{Type: "file", Data: buf[:n]}); werr != nil {
+				c.consumed = true
+				return TarSummary{}, fmt.Errorf("untar: send archive frame: %w", werr)
+			}
+		}
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			c.consumed = true
+			return TarSummary{}, fmt.Errorf("untar: read the archive: %w", err)
+		}
+	}
+	if err := c.write(Message{Type: "file"}); err != nil {
+		c.consumed = true
+		return TarSummary{}, fmt.Errorf("untar: send end-of-archive frame: %w", err)
+	}
+
+	msg, err := c.readReply(req.ID, false)
+	if err != nil {
+		return TarSummary{}, readError(ctx, req.Op, err)
+	}
+	switch msg.Type {
+	case "file":
+		if msg.Tar == nil {
+			return TarSummary{}, fmt.Errorf("untar: the guest did not report what it wrote")
+		}
+		return *msg.Tar, nil
+	case "error":
+		return TarSummary{}, frameError(req.Op, msg)
+	default:
+		c.consumed = true
+		return TarSummary{}, fmt.Errorf("untar: unexpected reply type %q", msg.Type)
+	}
+}
+
 // CopyFrom streams guestPath from the guest into dst.
 func (c *Client) CopyFrom(ctx context.Context, guestPath string, dst io.Writer) error {
 	if c.consumed {

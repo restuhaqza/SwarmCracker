@@ -204,6 +204,57 @@ runtime inside a sandbox template.
 A sandbox that is not `ready` cannot run anything, and the refusal names the state and,
 for a failed sandbox, the reason it failed.
 
+## Files, status and the console
+
+```bash
+sudo swarmcracker sandbox cp d22a0d18ff5f:workspace/app.log ./app.log   # out
+sudo swarmcracker sandbox cp ./repo d22a0d18ff5f:workspace/repo          # in
+swarmcracker sandbox status d22a0d18ff5f
+swarmcracker sandbox logs d22a0d18ff5f | tail -20
+```
+
+Exactly one of `cp`'s two arguments names a sandbox, as `<id>:<guest-path>`. The guest
+path is relative to the sandbox's **workspace root** (`/workspace` in the shipped
+templates), which is the only directory its guest agent will read or write — a leading
+`/` is that root — and it names what is created or read: `cp ./repo <id>:workspace/repo`
+writes the tree at `/workspace/repo`, and `cp <id>:workspace/repo ./repo` reads it back.
+
+A **file** and a **directory** both work in both directions. Neither is buffered: a tree
+is a tar archive streamed through a pipe, so a repository-sized (or gigabyte-sized)
+workspace costs no more memory than a chunk of it, on either side. A path that is neither
+a file nor a directory — a symbolic link, a device, a socket — is refused: copying a link
+would not copy what it points at.
+
+Writing a tree needs the template's agent to speak **`untar`**, which is advertised as an
+*optional* capability. A template built before it keeps working for everything else — a
+single file still arrives, and `sandbox cp <local-file> <id>:<path>` uses it — and only
+the tree is refused, naming the capability it lacks:
+
+```json
+{"error": {"code": "not_implemented",
+  "details": {"reason": "template_capability_missing", "capability": "untar"}}}
+```
+
+An archive arriving from a sandbox is **untrusted input**, even when the sandbox is yours.
+The node's guest-side extraction and this machine's own extraction hold the same rules: an
+entry that would write outside the destination is refused rather than skipped, a symbolic
+link is written only when its target stays inside, a hard link only when it names a file
+the same archive wrote, and a device, fifo or socket is skipped and counted. A workspace
+copy never becomes a way to write outside the workspace.
+
+`sandbox status` prints the node's record **and the guest's own answer**: its hostname and
+machine id, the kernel it is running, the vCPUs and memory it believes it has, its uptime,
+the tools its template ships, and its network — interfaces, addresses, routes and the
+resolver it consults. None of it is parsed from a command's output: the guest agent reads
+its own `/proc`, `/etc/os-release` and network state, so a template needs no shell for it
+and the answer does not change when a command's formatting does. `--format json` prints
+the `SandboxStatus` document whole.
+
+`sandbox logs` prints the **serial console**, which is a different thing from a task's
+logs: it is the VMM's record of the guest's serial port, from the first instruction the
+guest executes, so it exists for a sandbox that never became ready — which is where a boot
+that failed explains itself.
+
 ## Remove
 
 ```bash
@@ -291,6 +342,7 @@ nothing else. Over the API (`-H https://node:4250 --ca tls.crt --token-file …`
 | `POST /v1/sandboxes/<another id>/exec` | `403` `forbidden`, `details.reason` = `sandbox_selector_mismatch`, `details.sandboxId` = the sandbox asked about |
 | `POST /v1/sandboxes` (register one) | `403` `forbidden`, `details.reason` = `scope_missing`, `details.requiredScope` = `sandboxes:write` |
 | `POST /v1/sandboxes/<id>/tokens` (issue one) | `403` `forbidden`, `details.reason` = `scope_missing`, `details.requiredScope` = `sandboxes:token` |
+| `GET`/`PUT /v1/sandboxes/<id>/files` (copy files) | `403` `forbidden`, `details.reason` = `scope_missing`, `details.requiredScope` = `sandboxes:files` |
 
 A runner token that holds `sandboxes:exec` but names no sandbox at all is refused with
 `details.reason` = `sandbox_selector_required`, because otherwise it would be a shell
@@ -301,11 +353,13 @@ that sandbox's disk and published beside its muxer, and another sandbox's guest 
 it. `sandbox rm` deletes both the agent token and the API tokens scoped to the sandbox,
 so a credential never outlives what it authenticates.
 
-The scopes are `sandboxes:read` (reader and up), `sandboxes:exec` (runner and up),
-`sandboxes:write` (operator and up, for create and remove) and `sandboxes:token`
-(admin only: issuing a credential is administrative work). Checkpoints add a fifth,
-`sandboxes:checkpoints` (operator and up), which covers taking, listing, forking and
-removing them — see [Checkpoints and forks](#checkpoints-and-forks).
+The scopes are `sandboxes:read` (reader and up), `sandboxes:exec` and `sandboxes:files`
+(runner and up), `sandboxes:write` (operator and up, for create and remove) and
+`sandboxes:token` (admin only: issuing a credential is administrative work). `files` sits
+beside `exec` because it is the same power: writing a file into a sandbox is writing code
+into it, and reading one file can be what reading `/etc/shadow` would be. Checkpoints add
+a sixth, `sandboxes:checkpoints` (operator and up), which covers taking, listing, forking
+and removing them — see [Checkpoints and forks](#checkpoints-and-forks).
 
 ## Checkpoints and forks
 
@@ -419,6 +473,10 @@ The control plane is served on the node's v1 API. The routes are documented in
 | `GET /v1/sandboxes/{id}` | `sandboxes:read` |
 | `DELETE /v1/sandboxes/{id}` | `sandboxes:write` + the sandbox selector |
 | `POST /v1/sandboxes/{id}/exec` | `sandboxes:exec` + the sandbox selector |
+| `GET /v1/sandboxes/{id}/files` | `sandboxes:files` + the sandbox selector |
+| `PUT /v1/sandboxes/{id}/files` | `sandboxes:files` + the sandbox selector |
+| `GET /v1/sandboxes/{id}/logs` | `sandboxes:read` + the sandbox selector |
+| `GET /v1/sandboxes/{id}/status` | `sandboxes:read` + the sandbox selector |
 | `POST /v1/sandboxes/{id}/tokens` | `sandboxes:token` + the sandbox selector |
 | `POST /v1/sandboxes/{id}/checkpoints` | `sandboxes:checkpoints` + the sandbox selector |
 | `GET /v1/sandboxes/{id}/checkpoints` | `sandboxes:checkpoints` + the sandbox selector |
@@ -476,15 +534,24 @@ These are the boundaries of the first sandbox slice, not gaps in it:
 
 - **One node.** The routes are served by a node's `sandboxd`; there is no
   cluster-wide placement, and a sandbox does not migrate.
-- **No file copy, no exposure, no preview proxy, no pool and no cluster-wide quota.**
-  `sandbox cp`, `sandbox expose`, the preview proxy, warm pools and per-tenant quotas
-  that span nodes are later slices. The quota above is one node's own admission, checked
-  for both `sandbox create` and a fork. There is no warm pool, so
-  the ready time above is a cold boot.
+- **No exposure, no preview proxy, no pool and no cluster-wide quota.**
+  `sandbox expose`, the preview proxy, warm pools and per-tenant quotas that span nodes
+  are later slices; file copy is here, and a copy of a tree needs a template whose agent
+  advertises `untar` (see above). The quota above is one node's own admission, checked for
+  both `sandbox create` and a fork. There is no warm pool, so the ready time above is a
+  cold boot.
 - **Exec runs as the guest agent's user** (root inside the sandbox). A per-sandbox
   `--user` is not part of this slice; the isolation boundary is the microVM, not the
   uid inside it.
 - **The console log is kept** after `rm`, as a task's log is.
 - **`sandboxes:read` is not narrowed by selectors.** A sandbox-scoped token lists the
-  node's sandboxes, exactly as a task-scoped token lists the cluster's tasks; the
-  selector gates exec and removal.
+  node's sandboxes, exactly as a task-scoped token lists the cluster's tasks; the selector
+  gates exec, removal, files, logs and status.
+- **A sandbox-scoped token cannot copy files.** The token `sandbox token` mints holds
+  exactly `sandboxes:read` and `sandboxes:exec` — read and exec, **not** `sandboxes:files`
+  — so a file copy needs a credential that holds `sandboxes:files` (a runner, operator or
+  admin token, or the local socket). It is not a boundary, because `exec` is already the
+  power to write the workspace, and that is exactly why it is written down instead of left
+  implicit: adding a capability to a credential that can leak needs a caller that needs it,
+  not a symmetry argument, and no caller has needed a sandbox-scoped token to copy yet.
+  When one does, the mint is where it changes.
