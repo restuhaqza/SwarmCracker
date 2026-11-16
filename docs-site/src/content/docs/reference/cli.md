@@ -808,6 +808,8 @@ directly, because a sandbox outlives the command that asked for it.
 | `cp <id>:<path> <local>` | Copy a file or a directory in or out of a sandbox |
 | `status <id>` | Show a sandbox and what its guest says about itself (`--format json`) |
 | `logs <id>` | Print a sandbox's serial console |
+| `expose <id> --port <guest port>` | Serve one guest port on this node's host, through the preview proxy (needs `sandboxes:ports`) |
+| `unexpose <id> --port <guest port>` | Stop serving an exposed guest port |
 | `rm <id>` (alias `remove`) | Remove a sandbox and everything it holds |
 | `token <id>` | Mint an API token scoped to one sandbox (needs `sandboxes:token`) |
 
@@ -823,6 +825,8 @@ advertises `untar`, and a template without it is refused with `details.capabilit
 `untar` while a single file still arrives. `sandbox status` reads the guest's own `info`
 and `net` reports rather than parsing a command's output, so a template needs no shell for
 it.
+**`sandbox expose` / `unexpose` flags:** `--port` (required), and `--ttl <duration>` on
+`expose` (`0` uses the node's default, negative means never).
 **`sandbox token` flags:** `--name`, `--expires-at`.
 **Persistent flag:** `--sandbox-socket <path>` (default `$SWARM_SANDBOX_SOCKET`, else
 `/var/run/swarmcracker/sandboxd.sock`).
@@ -836,9 +840,21 @@ created to the guest's answer) as well as this command's wall clock. `sandbox ex
 streams the command's output and exits with the guest's own status, so a failing
 command is a failing command. `sandbox rm` stops the VMM first (and frees nothing if it
 cannot), then frees the socket, cgroup, jail, namespace (with the TAP device and the
-policy in it), disk, the host's copy of the agent token, the instance record and every
-API token scoped to the sandbox, and prints what it freed field by field. The guest's
-console log is kept, as a task's log outlives its task.
+policy in it), disk, the host's copy of the agent token, the instance record, every
+API token scoped to the sandbox and its preview listeners, and prints what it freed field
+by field. The guest's console log is kept, as a task's log outlives its task.
+
+`sandbox expose` serves one guest port on the node's host through the preview proxy: the
+port is bound on a loopback address derived from the sandbox, with the guest's own port, so
+two sandboxes may expose the same guest port without meeting and a preview is reachable
+from the host and from nowhere else. The command prints a URL with a preview token in it,
+and that token is printed once: the node keeps only its digest, so an exposure whose URL
+was lost has to be exposed again. A request without the token is answered `401`; a request
+to a guest port that was never exposed reaches nothing. An exposure dies with its sandbox,
+and `--ttl` bounds it further — once it has elapsed the listener answers `410` until the
+port is un-exposed or the sandbox is removed. `sandbox unexpose` closes the listener and
+takes the port back out of the sandbox's own policy; `sandbox inspect` shows the addresses
+and deadlines that remain.
 
 These commands accept `-H` / `--host` like the other API paths: without it they use the
 local control socket (whose file mode is the credential), and with it the same routes

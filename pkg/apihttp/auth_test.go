@@ -22,7 +22,7 @@ func TestRoleScopes(t *testing.T) {
 		ScopeEventsRead, ScopeClusterRead,
 		ScopeTokensAdmin, ScopeAuditRead,
 		ScopeSandboxesRead, ScopeSandboxesWrite, ScopeSandboxesCheckpoints, ScopeSandboxesExec, ScopeSandboxesToken,
-		ScopeSandboxesFiles,
+		ScopeSandboxesFiles, ScopeSandboxesPorts,
 	}
 
 	reader := []Scope{
@@ -30,7 +30,7 @@ func TestRoleScopes(t *testing.T) {
 		ScopeConfigsRead, ScopeSecretsRead, ScopeEventsRead, ScopeTasksLogs,
 		ScopeClusterRead, ScopeSandboxesRead,
 	}
-	runner := append(append([]Scope{}, reader...), ScopeTasksExec, ScopeTasksFiles, ScopeTasksSnapshots, ScopeSandboxesExec, ScopeSandboxesFiles)
+	runner := append(append([]Scope{}, reader...), ScopeTasksExec, ScopeTasksFiles, ScopeTasksSnapshots, ScopeSandboxesExec, ScopeSandboxesFiles, ScopeSandboxesPorts)
 	operator := append(append([]Scope{}, runner...),
 		ScopeServicesWrite, ScopeNetworksWrite, ScopeConfigsWrite,
 		ScopeConfigsReadValues, ScopeSecretsWrite, ScopeSandboxesWrite, ScopeSandboxesCheckpoints)

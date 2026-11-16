@@ -466,6 +466,8 @@ export interface Sandbox {
   diskCopy?: "reflink" | "sparse" | "full";
   agentVersion?: string;
   bootId?: string;
+  /** The guest ports this node serves to its own host through the preview proxy: one entry per exposed port, with the host address that serves it. The token that opens one is not here: it is returned once, by the call that exposed the port. */
+  ports?: SandboxPort[];
 }
 
 export interface SandboxCreate {
@@ -507,6 +509,8 @@ export interface SandboxDocument {
   diskCopy?: "reflink" | "sparse" | "full";
   agentVersion?: string;
   bootId?: string;
+  /** The guest ports this node serves to its own host through the preview proxy: one entry per exposed port, with the host address that serves it. The token that opens one is not here: it is returned once, by the call that exposed the port. */
+  ports?: SandboxPort[];
   schemaVersion: 1;
   kind: "Sandbox";
 }
@@ -549,6 +553,8 @@ export interface SandboxFreed {
   instanceRecordRemoved?: boolean;
   recordRemoved?: boolean;
   apiTokensRevoked?: number;
+  /** How many preview listeners an exposed guest port was served on, closed by this teardown. */
+  previewsClosed?: number;
 }
 
 /** What the guest knows about itself, read from its own /proc and /etc/os-release rather than inferred from the template. */
@@ -620,6 +626,37 @@ export interface SandboxNetRoute {
   metric?: number;
 }
 
+/** One guest port reached from the host through this node's preview proxy. The address is on the node's loopback, so the exposure is reachable from the host and not from the network; the guest's own port is kept, so a service that prints its own URL prints something still true here; and the address is derived from the sandbox, so two sandboxes may expose one guest port without meeting. */
+export interface SandboxPort {
+  /** The port inside the guest, and the port the host address serves. */
+  guestPort: number;
+  /** The host address the preview listens on, "address:port". */
+  address: string;
+  /** The address as a URL, without the token. */
+  url: string;
+  /** When the exposure stops serving. Once it has, the listener answers 410 gone until the port is un-exposed or the sandbox is removed. Absent means it never expires and lives exactly as long as its sandbox. */
+  expiresAt?: string;
+}
+
+/** An exposure, with the token that opens it. The token — and the URL that carries it — is in this response and never again: the node keeps only the digest, so an exposure whose URL a caller lost has to be exposed again. */
+export interface SandboxPortExposure {
+  schemaVersion: 1;
+  kind: "SandboxPortExposure";
+  sandbox: string;
+  port: SandboxPort;
+  /** The preview token. Present in this response and never again. */
+  token: string;
+  /** The URL to open: the port's own URL with the token in it. */
+  authenticatedUrl: string;
+}
+
+export interface SandboxPortRequest {
+  /** The guest port to serve on the host. */
+  guestPort: number;
+  /** How long the exposure is served in seconds: 0 means the node's default, -1 means it never expires, and a positive value is the TTL. */
+  ttlSeconds?: number;
+}
+
 export interface SandboxRemoval {
   schemaVersion: 1;
   kind: "SandboxRemoval";
@@ -652,6 +689,8 @@ export interface SandboxStatus {
   diskCopy?: "reflink" | "sparse" | "full";
   agentVersion?: string;
   bootId?: string;
+  /** The guest ports this node serves to its own host through the preview proxy: one entry per exposed port, with the host address that serves it. The token that opens one is not here: it is returned once, by the call that exposed the port. */
+  ports?: SandboxPort[];
   schemaVersion: 1;
   kind: "SandboxStatus";
   info: SandboxStatusInfo;

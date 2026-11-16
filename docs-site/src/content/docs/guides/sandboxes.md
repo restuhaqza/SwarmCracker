@@ -255,6 +255,65 @@ logs: it is the VMM's record of the guest's serial port, from the first instruct
 guest executes, so it exists for a sandbox that never became ready — which is where a boot
 that failed explains itself.
 
+## Expose a port
+
+```bash
+sudo swarmcracker sandbox expose d22a0d18ff5f --port 8080
+```
+
+```text
+http://127.203.229.82:8080/?token=1b25014808e5b83ad7cc45ff43a86f5c86ab3ff2634c7c2ff9ae4435f9dbfefd
+  sandbox:  d22a0d18ff5f
+  host:     127.203.229.82:8080
+  guest:    8080
+  token:    1b25014808e5b83ad7cc45ff43a86f5c86ab3ff2634c7c2ff9ae4435f9dbfefd
+  expires:  2026-11-16T11:01:47.543991811Z
+```
+
+A guest's port is not published by a host forward: the guest is on a TAP inside the
+sandbox's own network namespace, and that namespace has no interface on the node, so there
+is nothing on the node for a forward to point at. The node runs a listener of its own
+instead — the preview proxy — and relays each accepted connection to the guest from
+*inside* the namespace, the one place the guest's address means anything.
+
+The listener binds a loopback address derived from the sandbox's ID, with the guest's own
+port. Two things follow, and both are what a caller wants: the address is **stable** — the
+same sandbox always gets the same one, with no allocator state to lose — and **distinct** —
+two sandboxes exposing the same guest port listen on two different addresses, so neither
+can answer for the other. Keeping the guest's port means a service that prints its own URL
+prints something that is still true from the host. Because the address is on the node's
+loopback, a preview is reachable from the host and from nowhere else: exposing a port does
+not put a guest service on the wire.
+
+A preview is not open. The listener requires a **preview token**, minted when the port is
+exposed and printed once — the node keeps only its digest — and the check is at the HTTP
+layer, because a preview is a link a person opens:
+
+| Request to an exposed address | Answer |
+|---|---|
+| `GET http://<address>/` | `401` `Unauthorized` |
+| `GET http://<address>/?token=<wrong>` | `401` `Unauthorized` |
+| `GET http://<address>/?token=<token>` | the guest's own answer, relayed byte for byte |
+| `GET http://<address>/` with `Authorization: Bearer <token>` | the guest's own answer |
+| a guest port that was never exposed | connection refused: nothing is listening |
+
+Nothing is rewritten on the way through: the request reaches the guest exactly as the
+client sent it, token and all.
+
+An exposure also expires. `--ttl` is how long it is served for (`0` means the node's
+default, negative means never), and once it has elapsed the listener stays and answers
+`410 Gone` to every request until the port is un-exposed or the sandbox is removed — the
+listener is the thing that can say "this was here and is gone", which a connection refused
+cannot.
+
+`sandbox unexpose <id> --port <port>` closes the listener and takes the port back out of
+the sandbox's own policy; the sandbox is unaffected, and the port can be exposed again
+(which mints a new token). Nothing an exposure does changes what the sandbox may reach: a
+preview is an opening *into* one guest, written in two chains of its own in the sandbox's
+table, and the egress half of that table is never touched by one. An exposure's sockets are
+the daemon's, so a restarted `sandboxd` re-opens the exposures its records still name: a URL
+with a token a client kept keeps working.
+
 ## Remove
 
 ```bash
@@ -353,8 +412,9 @@ that sandbox's disk and published beside its muxer, and another sandbox's guest 
 it. `sandbox rm` deletes both the agent token and the API tokens scoped to the sandbox,
 so a credential never outlives what it authenticates.
 
-The scopes are `sandboxes:read` (reader and up), `sandboxes:exec` and `sandboxes:files`
-(runner and up), `sandboxes:write` (operator and up, for create and remove) and
+The scopes are `sandboxes:read` (reader and up), `sandboxes:exec`, `sandboxes:files` and
+`sandboxes:ports` (runner and up), `sandboxes:write` (operator and up, for create and
+remove) and
 `sandboxes:token` (admin only: issuing a credential is administrative work). `files` sits
 beside `exec` because it is the same power: writing a file into a sandbox is writing code
 into it, and reading one file can be what reading `/etc/shadow` would be. Checkpoints add
@@ -477,6 +537,8 @@ The control plane is served on the node's v1 API. The routes are documented in
 | `PUT /v1/sandboxes/{id}/files` | `sandboxes:files` + the sandbox selector |
 | `GET /v1/sandboxes/{id}/logs` | `sandboxes:read` + the sandbox selector |
 | `GET /v1/sandboxes/{id}/status` | `sandboxes:read` + the sandbox selector |
+| `POST /v1/sandboxes/{id}/ports` | `sandboxes:ports` + the sandbox selector |
+| `DELETE /v1/sandboxes/{id}/ports/{port}` | `sandboxes:ports` + the sandbox selector |
 | `POST /v1/sandboxes/{id}/tokens` | `sandboxes:token` + the sandbox selector |
 | `POST /v1/sandboxes/{id}/checkpoints` | `sandboxes:checkpoints` + the sandbox selector |
 | `GET /v1/sandboxes/{id}/checkpoints` | `sandboxes:checkpoints` + the sandbox selector |
@@ -537,12 +599,13 @@ These are the boundaries of the first sandbox slice, not gaps in it:
 
 - **One node.** The routes are served by a node's `sandboxd`; there is no
   cluster-wide placement, and a sandbox does not migrate.
-- **No exposure, no preview proxy, no pool and no cluster-wide quota.**
-  `sandbox expose`, the preview proxy, warm pools and per-tenant quotas that span nodes
-  are later slices; file copy is here, and a copy of a tree needs a template whose agent
-  advertises `untar` (see above). The quota above is one node's own admission, checked for
-  both `sandbox create` and a fork. There is no warm pool, so the ready time above is a
-  cold boot.
+- **No pool and no cluster-wide quota.** Warm pools and per-tenant quotas that span nodes
+  are later slices. The quota above is one node's own admission, checked for both `sandbox
+  create` and a fork. There is no warm pool, so the ready time above is a cold boot.
+- **A preview is one port, on the node's own loopback.** `sandbox expose` serves a guest
+  port to the machine the sandbox runs on; it is not a public ingress, there is no hostname
+  per exposure and no cluster-wide route to one. The token check is at the HTTP layer, so a
+  preview of a non-HTTP protocol is not something this route does.
 - **Exec runs as the guest agent's user** (root inside the sandbox). A per-sandbox
   `--user` is not part of this slice; the isolation boundary is the microVM, not the
   uid inside it.

@@ -68,17 +68,41 @@ import (
 // by policy. An empty allowlist produces this script unchanged — not a script with
 // zero accepts, but the same bytes as the version before the allowlist existed —
 // so `egress: none` behaves exactly as it did.
+//
+// # What an exposure adds
+//
+// The other direction: a guest port the node reaches, through a preview proxy it runs on
+// itself. A preview is inbound — the node's socket, created inside the sandbox's
+// namespace, connects to the guest's own address and port, and the guest answers it — so
+// its two accepts are the mirror of an egress destination's: one for the node's connection
+// out to the guest and one for the guest's replies back, both matched on the guest's
+// address and on the one exposed port, and both pinned to the TAP the guest is on.
+//
+// They are not written by this function. An exposure is a change to a *running* sandbox's
+// policy, made by SetInbound, and rewriting the whole table then would mean knowing the
+// egress plan — which is a lease this process holds, not a fact about the sandbox: after a
+// daemon restart it is gone while the sandbox is still running. So the exposure half lives
+// in two chains of its own, preview_in and preview_out, which the base chains jump to
+// before they drop, and SetInbound empties and refills exactly those two. The egress rules
+// below are then never touched by an exposure: no destination becomes reachable because a
+// port was exposed, no egress rule is rewritten by exposing one, and a sandbox with no
+// exposure carries both chains empty.
 func policyScript(gateway netip.Addr, plan []Destination) string {
 	var script strings.Builder
 
 	script.WriteString("destroy table inet " + policyTable + "\n")
 	script.WriteString("table inet " + policyTable + " {\n")
+	// The preview chains are declared before the base chains so the jumps below name
+	// something that already exists, and they are empty until SetInbound fills them.
+	script.WriteString("\tchain " + previewInChain + " {\n\t}\n\n")
+	script.WriteString("\tchain " + previewOutChain + " {\n\t}\n\n")
 	script.WriteString("\tchain input {\n")
 	script.WriteString("\t\ttype filter hook input priority filter; policy drop;\n")
 	script.WriteString("\t\tiifname \"lo\" accept\n")
 	for _, line := range policyAccepts(gateway, plan) {
 		script.WriteString("\t\t" + line + "\n")
 	}
+	script.WriteString("\t\tjump " + previewInChain + "\n")
 	script.WriteString("\t\tcounter drop\n")
 	script.WriteString("\t}\n\n")
 
@@ -93,10 +117,33 @@ func policyScript(gateway netip.Addr, plan []Destination) string {
 	for _, line := range policyAnswers(gateway, plan) {
 		script.WriteString("\t\t" + line + "\n")
 	}
+	script.WriteString("\t\tjump " + previewOutChain + "\n")
 	script.WriteString("\t\tcounter drop\n")
 	script.WriteString("\t}\n")
 
 	script.WriteString("}\n")
+	return script.String()
+}
+
+// exposureScript is what SetInbound installs: the two preview chains emptied and refilled
+// with the accepts of the ports that are exposed, and nothing else. Emptying first is what
+// makes it a function of the ports it is given rather than of what was there before — an
+// exposure that ended leaves no rule behind, and re-applying the same ports is the same
+// table.
+//
+// It is applied with `nft -f` inside the sandbox's namespace. Both chains exist as soon as
+// the sandbox is attached (policyScript declares them), so a failure here is a namespace
+// without a table rather than a chain that has to be made first, and it is reported.
+func exposureScript(guest netip.Addr, exposed []uint16) string {
+	var script strings.Builder
+	script.WriteString("flush chain inet " + policyTable + " " + previewInChain + "\n")
+	script.WriteString("flush chain inet " + policyTable + " " + previewOutChain + "\n")
+	for _, rule := range exposureAnswers(guest, exposed) {
+		script.WriteString("add rule inet " + policyTable + " " + previewInChain + " " + rule + "\n")
+	}
+	for _, rule := range exposureAccepts(guest, exposed) {
+		script.WriteString("add rule inet " + policyTable + " " + previewOutChain + " " + rule + "\n")
+	}
 	return script.String()
 }
 
@@ -133,6 +180,51 @@ func policyAnswers(gateway netip.Addr, plan []Destination) []string {
 		lines = append(lines, fmt.Sprintf("ip saddr %s tcp sport %d counter accept", rule.address, rule.port))
 	}
 	return lines
+}
+
+// exposureAccepts is what the node's own socket may send to reach an exposed guest
+// port: the connection into the guest, on the port that was exposed, out the TAP the
+// guest is on. The port beside the guest's address is the whole match, so exposing one
+// port opens exactly one port.
+func exposureAccepts(guest netip.Addr, exposed []uint16) []string {
+	ports := exposedPorts(exposed)
+	lines := make([]string, 0, len(ports))
+	for _, port := range ports {
+		lines = append(lines, fmt.Sprintf("oifname %q ip daddr %s tcp dport %d counter accept", TapName, guest, port))
+	}
+	return lines
+}
+
+// exposureAnswers is what the guest may send back: its replies to the node's socket,
+// from the port that was exposed, in on the TAP. The node's source port is ephemeral
+// and is not part of the match; the port the guest answered from is.
+func exposureAnswers(guest netip.Addr, exposed []uint16) []string {
+	ports := exposedPorts(exposed)
+	lines := make([]string, 0, len(ports))
+	for _, port := range ports {
+		lines = append(lines, fmt.Sprintf("iifname %q ip saddr %s tcp sport %d counter accept", TapName, guest, port))
+	}
+	return lines
+}
+
+// exposedPorts is the ports in a set, once, ascending: a ruleset is a function of the
+// exposed ports and not of the order a caller happened to expose them in, which is
+// what makes it readable in a diff and comparable in a test.
+func exposedPorts(exposed []uint16) []uint16 {
+	if len(exposed) == 0 {
+		return nil
+	}
+	seen := make(map[uint16]bool, len(exposed))
+	ports := make([]uint16, 0, len(exposed))
+	for _, port := range exposed {
+		if port == 0 || seen[port] {
+			continue
+		}
+		seen[port] = true
+		ports = append(ports, port)
+	}
+	sort.Slice(ports, func(i, j int) bool { return ports[i] < ports[j] })
+	return ports
 }
 
 // allowRule is one (address, port) pair the namespace accepts: the unit the input

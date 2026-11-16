@@ -12,16 +12,28 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// denyAllScript is the ruleset exactly as it was before an allowlist existed. The
-// empty allowlist is compared against it byte for byte, because "an allowlist with
-// no entries adds no rules" is the easy way to break `egress: none`, and a comparison
-// of behaviour would let a changed script pass as long as the change happened to
-// allow nothing.
+// denyAllScript is the ruleset of a sandbox with no allowlist and nothing exposed. The
+// empty allowlist is compared against it byte for byte, because "an allowlist with no
+// entries adds no rules" is the easy way to break `egress: none`, and a comparison of
+// behaviour would let a changed script pass as long as the change happened to allow
+// nothing.
+//
+// The two preview chains are part of the baseline: they are where an exposure is written
+// (SetInbound) and they are empty here, so this is the table a sandbox carries before
+// anyone exposes anything — and a sandbox whose allowlist is empty still reaches nothing,
+// including its own gateway.
 const denyAllScript = `destroy table inet sandbox
 table inet sandbox {
+	chain preview_in {
+	}
+
+	chain preview_out {
+	}
+
 	chain input {
 		type filter hook input priority filter; policy drop;
 		iifname "lo" accept
+		jump preview_in
 		counter drop
 	}
 
@@ -33,6 +45,7 @@ table inet sandbox {
 	chain output {
 		type filter hook output priority filter; policy drop;
 		oifname "lo" accept
+		jump preview_out
 		counter drop
 	}
 }

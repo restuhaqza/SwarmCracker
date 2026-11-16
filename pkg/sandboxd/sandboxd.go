@@ -83,6 +83,10 @@ type Config struct {
 	// agent's hello.
 	ReadyTimeout time.Duration
 
+	// PreviewTTL is how long an exposed guest port is served for, for an exposure
+	// that asked for no TTL of its own (pkg/sandbox/preview.go). Zero means never.
+	PreviewTTL time.Duration
+
 	// Quota is what this node admits: how many sandboxes one owner may hold, and how
 	// much memory and disk all of them may occupy together. Every field's zero means
 	// the default in pkg/sandbox (sandbox.DefaultQuota), and a negative value stops
@@ -180,6 +184,7 @@ func New(cfg Config) (*sandbox.Manager, *apihttp.TokenStore, error) {
 		MemoryMB:        cfg.MemoryMB,
 		DefaultTTL:      cfg.DefaultTTL,
 		Events:          cfg.Events,
+		PreviewTTL:      cfg.PreviewTTL,
 		Quota:           cfg.Quota,
 		Checkpoints:     cfg.Checkpoints,
 		CheckpointBlobs: cfg.CheckpointBlobs,

@@ -424,6 +424,8 @@ class Sandbox(TypedDict):
     diskCopy: NotRequired[Literal["reflink", "sparse", "full"]]
     agentVersion: NotRequired[str]
     bootId: NotRequired[str]
+    # The guest ports this node serves to its own host through the preview proxy: one entry per exposed port, with the host address that serves it. The token that opens one is not here: it is returned once, by the call that exposed the port.
+    ports: NotRequired[list[SandboxPort]]
 
 class SandboxCreate(TypedDict):
     # The sealed template to boot, by name (newest version) or name@version. Resolved and pin-checked on the node before anything is copied.
@@ -463,6 +465,8 @@ class SandboxDocument(TypedDict):
     diskCopy: NotRequired[Literal["reflink", "sparse", "full"]]
     agentVersion: NotRequired[str]
     bootId: NotRequired[str]
+    # The guest ports this node serves to its own host through the preview proxy: one entry per exposed port, with the host address that serves it. The token that opens one is not here: it is returned once, by the call that exposed the port.
+    ports: NotRequired[list[SandboxPort]]
     schemaVersion: Literal[1]
     kind: Literal["Sandbox"]
 
@@ -502,6 +506,8 @@ class SandboxFreed(TypedDict):
     instanceRecordRemoved: NotRequired[bool]
     recordRemoved: NotRequired[bool]
     apiTokensRevoked: NotRequired[int]
+    # How many preview listeners an exposed guest port was served on, closed by this teardown.
+    previewsClosed: NotRequired[int]
 
 class SandboxGuestInfo(TypedDict):
     """What the guest knows about itself, read from its own /proc and /etc/os-release rather than inferred from the template."""
@@ -567,6 +573,34 @@ class SandboxNetRoute(TypedDict):
     device: NotRequired[str]
     metric: NotRequired[int]
 
+class SandboxPort(TypedDict):
+    """One guest port reached from the host through this node's preview proxy. The address is on the node's loopback, so the exposure is reachable from the host and not from the network; the guest's own port is kept, so a service that prints its own URL prints something still true here; and the address is derived from the sandbox, so two sandboxes may expose one guest port without meeting."""
+    # The port inside the guest, and the port the host address serves.
+    guestPort: int
+    # The host address the preview listens on, "address:port".
+    address: str
+    # The address as a URL, without the token.
+    url: str
+    # When the exposure stops serving. Once it has, the listener answers 410 gone until the port is un-exposed or the sandbox is removed. Absent means it never expires and lives exactly as long as its sandbox.
+    expiresAt: NotRequired[str]
+
+class SandboxPortExposure(TypedDict):
+    """An exposure, with the token that opens it. The token — and the URL that carries it — is in this response and never again: the node keeps only the digest, so an exposure whose URL a caller lost has to be exposed again."""
+    schemaVersion: Literal[1]
+    kind: Literal["SandboxPortExposure"]
+    sandbox: str
+    port: SandboxPort
+    # The preview token. Present in this response and never again.
+    token: str
+    # The URL to open: the port's own URL with the token in it.
+    authenticatedUrl: str
+
+class SandboxPortRequest(TypedDict):
+    # The guest port to serve on the host.
+    guestPort: int
+    # How long the exposure is served in seconds: 0 means the node's default, -1 means it never expires, and a positive value is the TTL.
+    ttlSeconds: NotRequired[int]
+
 class SandboxRemoval(TypedDict):
     schemaVersion: Literal[1]
     kind: Literal["SandboxRemoval"]
@@ -598,6 +632,8 @@ class SandboxStatus(TypedDict):
     diskCopy: NotRequired[Literal["reflink", "sparse", "full"]]
     agentVersion: NotRequired[str]
     bootId: NotRequired[str]
+    # The guest ports this node serves to its own host through the preview proxy: one entry per exposed port, with the host address that serves it. The token that opens one is not here: it is returned once, by the call that exposed the port.
+    ports: NotRequired[list[SandboxPort]]
     schemaVersion: Literal[1]
     kind: Literal["SandboxStatus"]
     info: SandboxStatusInfo

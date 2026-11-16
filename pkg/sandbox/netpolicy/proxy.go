@@ -427,9 +427,13 @@ func listenUDPIn(nsPath, address string) (*net.UDPConn, error) {
 // it again before returning.
 //
 // The section is deliberately tiny: the thread is locked to this goroutine, and
-// nothing between entering and leaving may block, allocate a socket of its own or hand
-// the thread to another goroutine, because the namespace is a property of the thread
-// and every socket created on it would land in the sandbox.
+// nothing between entering and leaving may allocate a socket of its own or hand the
+// thread to another goroutine, because the namespace is a property of the thread and
+// every socket created on it would land in the sandbox. The sockets fn means to make
+// *inside* the sandbox are the whole point — a listener for an allowlisted destination,
+// a dial to the guest — and fn may block on them for as long as they take: the thread
+// belongs to this goroutine for the whole call, so nothing else can create a socket on
+// a thread that is in the sandbox.
 func inNamespace(path string, fn func() error) error {
 	runtime.LockOSThread()
 	// A thread that could not be brought back must not be handed to another

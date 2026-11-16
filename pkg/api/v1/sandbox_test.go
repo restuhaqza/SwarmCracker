@@ -41,6 +41,59 @@ func TestSandboxDocumentsCarryTheirEnvelope(t *testing.T) {
 	}
 }
 
+// TestSandboxPortDocumentsAreValidatedAgainstTheSchema is the exposure half of the wire
+// contract, held to the normative OpenAPI schema rather than to a copy of itself: the
+// request a caller posts, the exposure it gets back, the port on the sandbox's own
+// document, and the deadline that says when the exposure stops serving. A schema that
+// drifted from the documents would let a client generate code for fields the node never
+// sends — and the token is the field that must not appear on a read.
+func TestSandboxPortDocumentsAreValidatedAgainstTheSchema(t *testing.T) {
+	doc := loadOpenAPI(t)
+
+	exposed := SandboxPort{
+		GuestPort: 8080,
+		Address:   "127.203.229.82:8080",
+		URL:       "http://127.203.229.82:8080/",
+		ExpiresAt: "2026-11-16T11:01:47Z",
+	}
+	validateAgainst(t, doc, "SandboxPort", toJSONValue(t, exposed))
+
+	request := SandboxPortRequest{GuestPort: 8080, TTLSeconds: 600}
+	validateAgainst(t, doc, "SandboxPortRequest", toJSONValue(t, request))
+
+	exposure := NewSandboxPortExposure("sbx1", exposed, "a-preview-token", exposed.URL+"?token=a-preview-token")
+	assert.Equal(t, KindSandboxPort, exposure.Kind)
+	validateAgainst(t, doc, "SandboxPortExposure", toJSONValue(t, exposure))
+
+	// A sandbox that names its exposures, and a teardown that reports the listeners it
+	// closed, both stay inside the sandbox document's schema.
+	sandbox := NewSandboxDocument(Sandbox{ID: "sbx1", State: "ready", Ports: []SandboxPort{exposed}})
+	validateAgainst(t, doc, "SandboxDocument", toJSONValue(t, sandbox))
+	removal := NewSandboxRemoval("sbx1", SandboxFreed{PreviewsClosed: 2, RecordRemoved: true})
+	validateAgainst(t, doc, "SandboxRemoval", toJSONValue(t, removal))
+
+	// The read model carries no credential: the token is in the exposure response, which
+	// is returned once, and a reader of the sandbox document gets the address only.
+	data, err := json.Marshal(sandbox)
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "a-preview-token")
+	assert.NotContains(t, string(data), "tokenHash", "not even the digest crosses the API")
+	assert.Contains(t, string(data), `"ports":[{"guestPort":8080`)
+
+	require.NotNil(t, doc.Paths.Find("/v1/sandboxes/{id}/ports"))
+	require.NotNil(t, doc.Paths.Find("/v1/sandboxes/{id}/ports/{port}"))
+}
+
+// toJSONValue renders a document as the generic value the schema validator takes.
+func toJSONValue(t *testing.T, value any) any {
+	t.Helper()
+	data, err := json.Marshal(value)
+	require.NoError(t, err)
+	var out any
+	require.NoError(t, json.Unmarshal(data, &out))
+	return out
+}
+
 // TestCheckpointDocumentsUseTheContractsKeys pins the JSON *keys*, not only the values: a
 // field without a tag marshals as its Go name, which a client reading "kind" never sees.
 // The checkpoint documents are the ones this caught.

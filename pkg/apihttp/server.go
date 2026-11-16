@@ -403,6 +403,15 @@ func (s *Server) routes() {
 		read(ScopeSandboxesRead, s.getSandboxStatus))
 	s.handleRoutes("/v1/sandboxes/{id}/tokens",
 		write(http.MethodPost, ScopeSandboxesToken, s.createSandboxToken))
+	// Exposing a guest port serves it on the node's host, so the route takes the same
+	// narrowing as exec: the caller's sandbox selectors must name this sandbox, and
+	// sandboxes:ports is what grants the operation. DELETE names the port, because one
+	// exposure per guest port is its identity. No query parameter is implemented, so a
+	// typo is a 400 rather than a silently different request.
+	s.handleRoutes("/v1/sandboxes/{id}/ports",
+		write(http.MethodPost, ScopeSandboxesPorts, s.exposeSandboxPort))
+	s.handleRoutes("/v1/sandboxes/{id}/ports/{port}",
+		write(http.MethodDelete, ScopeSandboxesPorts, s.unexposeSandboxPort))
 
 	// Checkpoints: the sandbox-scoped routes the RFC states, and the node-scoped ones a
 	// checkpoint needs to be reachable once its sandbox is gone (a checkpoint outlives

@@ -70,6 +70,13 @@ type fakeSandboxes struct {
 	status  sandbox.Status
 	logPath string
 	logErr  error
+
+	// exposeReq and unexposePort record what the port routes asked the control plane
+	// for; exposeErr and unexposeErr are the refusals those routes must map.
+	exposeReq   exposeCall
+	unexposeFor uint16
+	exposeErr   error
+	unexposeErr error
 }
 
 func (f *fakeSandboxes) Checkpoint(_ context.Context, id, name string) (sandbox.CheckpointRecord, error) {
@@ -139,6 +146,13 @@ func (f *fakeSandboxes) ForkFromSandbox(_ context.Context, id string, req sandbo
 	return f.Fork(context.Background(), req)
 }
 
+// exposeCall is one exposure request as the route passed it on.
+type exposeCall struct {
+	id        string
+	guestPort uint16
+	ttl       time.Duration
+}
+
 func (f *fakeSandboxes) List() ([]sandbox.Record, []string, error) {
 	if f.listErr != nil {
 		return nil, nil, f.listErr
@@ -193,6 +207,51 @@ func (f *fakeSandboxes) ServeExec(_ context.Context, id string, w http.ResponseW
 	w.WriteHeader(http.StatusOK)
 	_, err := w.Write([]byte(`{"type":"exit","exitCode":0}` + "\n"))
 	return err
+}
+
+func (f *fakeSandboxes) Expose(_ context.Context, id string, guestPort uint16, ttl time.Duration) (sandbox.Exposure, error) {
+	f.exposeReq = exposeCall{id: id, guestPort: guestPort, ttl: ttl}
+	if f.exposeErr != nil {
+		return sandbox.Exposure{}, f.exposeErr
+	}
+	exposed := sandbox.ExposedPort{
+		GuestPort: guestPort,
+		Address:   "127.9.9.9",
+		TokenHash: "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
+		Created:   time.Date(2026, 11, 12, 10, 0, 0, 0, time.UTC),
+	}
+	if ttl > 0 {
+		exposed.ExpiresAt = exposed.Created.Add(ttl)
+	}
+	if rec, ok := f.records[id]; ok && rec.State == sandbox.StateReady {
+		rec.Ports = append(rec.Ports, exposed)
+		f.records[id] = rec
+	}
+	return sandbox.Exposure{
+		ExposedPort: exposed,
+		Token:       "preview-secret",
+		URL:         exposed.URL() + "?token=preview-secret",
+	}, nil
+}
+
+func (f *fakeSandboxes) Unexpose(_ context.Context, id string, guestPort uint16) error {
+	f.unexposeFor = guestPort
+	if f.unexposeErr != nil {
+		return f.unexposeErr
+	}
+	rec, ok := f.records[id]
+	if !ok {
+		return sandbox.ErrNotFound
+	}
+	kept := make([]sandbox.ExposedPort, 0, len(rec.Ports))
+	for _, p := range rec.Ports {
+		if p.GuestPort != guestPort {
+			kept = append(kept, p)
+		}
+	}
+	rec.Ports = kept
+	f.records[id] = rec
+	return nil
 }
 
 // sandboxServer builds a server with a real token store and the given sandbox
@@ -253,6 +312,8 @@ func TestSandboxRoutesRequireTheirScope(t *testing.T) {
 		{http.MethodDelete, "/v1/sandboxes/a", ScopeSandboxesWrite},
 		{http.MethodPost, "/v1/sandboxes/a/exec", ScopeSandboxesExec},
 		{http.MethodPost, "/v1/sandboxes/a/tokens", ScopeSandboxesToken},
+		{http.MethodPost, "/v1/sandboxes/a/ports", ScopeSandboxesPorts},
+		{http.MethodDelete, "/v1/sandboxes/a/ports/8080", ScopeSandboxesPorts},
 	}
 
 	for _, tc := range cases {
@@ -341,6 +402,104 @@ func TestSandboxScopedTokenCannotReachAnotherSandbox(t *testing.T) {
 	require.Equal(t, http.StatusForbidden, rec.Code)
 	doc = decodeErrorBody(t, rec)
 	assert.Equal(t, string(ScopeSandboxesWrite), doc.Error.Details["requiredScope"])
+}
+
+// TestExposeSandboxPortIsSelectorGatedAndReturnsTheTokenOnce is the expose route end to
+// end: a token minted for one sandbox cannot expose another's port, an exposure answers
+// with the address and the token that opens it, and the sandbox's own document carries the
+// address afterwards without the credential.
+func TestExposeSandboxPortIsSelectorGatedAndReturnsTheTokenOnce(t *testing.T) {
+	boxes := &fakeSandboxes{records: map[string]sandbox.Record{
+		"a": {ID: "a", State: sandbox.StateReady},
+		"b": {ID: "b", State: sandbox.StateReady},
+	}}
+	srv, store := sandboxServer(t, boxes)
+
+	admin, _, err := store.Create("admin", RoleAdmin)
+	require.NoError(t, err)
+	minted, _, err := store.CreateWithOptions("sandbox a", RoleRunner, TokenOptions{
+		Scopes:           []string{string(ScopeSandboxesRead), string(ScopeSandboxesExec)},
+		SandboxSelectors: &SandboxSelectors{SandboxIDs: []string{"a"}},
+	})
+	require.NoError(t, err)
+
+	// A's token names no sandboxes scope at all: it is refused by scope, not by selector.
+	rec := sandboxRequest(t, srv, minted, http.MethodPost, "/v1/sandboxes/a/ports", `{"guestPort":8080}`)
+	require.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
+	assert.Equal(t, string(ScopeSandboxesPorts), decodeErrorBody(t, rec).Error.Details["requiredScope"])
+
+	// An admin may, and gets the exposure with the token.
+	rec = sandboxRequest(t, srv, admin, http.MethodPost, "/v1/sandboxes/a/ports", `{"guestPort":8080,"ttlSeconds":600}`)
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+	var exposure v1.SandboxPortExposure
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &exposure))
+	assert.Equal(t, v1.KindSandboxPort, exposure.Kind)
+	assert.Equal(t, "a", exposure.Sandbox)
+	assert.Equal(t, uint16(8080), exposure.Port.GuestPort)
+	assert.Equal(t, "127.9.9.9:8080", exposure.Port.Address)
+	assert.Equal(t, "preview-secret", exposure.Token)
+	assert.Contains(t, exposure.Authenticated, "?token=preview-secret")
+	assert.Equal(t, 10*time.Minute, boxes.exposeReq.ttl)
+	assert.Equal(t, uint16(8080), boxes.exposeReq.guestPort)
+
+	// The sandbox's own document names the exposure — and not the credential.
+	rec = sandboxRequest(t, srv, admin, http.MethodGet, "/v1/sandboxes/a", "")
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	assert.Contains(t, rec.Body.String(), `"address":"127.9.9.9:8080"`)
+	assert.NotContains(t, rec.Body.String(), "preview-secret")
+	assert.NotContains(t, rec.Body.String(), "0f0f0f0f", "the token's digest does not cross the API either")
+
+	// A runner that holds the port scope but is narrowed to another sandbox cannot
+	// expose this one's port: the selector is what makes the scope safe to hold.
+	other, _, err := store.CreateWithOptions("runner b", RoleRunner, TokenOptions{
+		Scopes:           []string{string(ScopeSandboxesPorts)},
+		SandboxSelectors: &SandboxSelectors{SandboxIDs: []string{"b"}},
+	})
+	require.NoError(t, err)
+	rec = sandboxRequest(t, srv, other, http.MethodPost, "/v1/sandboxes/a/ports", `{"guestPort":8080}`)
+	require.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
+	assert.Equal(t, "sandbox_selector_mismatch", decodeErrorBody(t, rec).Error.Details["reason"])
+
+	// Un-exposing names the port, and the answer is the sandbox as it now stands.
+	rec = sandboxRequest(t, srv, admin, http.MethodDelete, "/v1/sandboxes/a/ports/8080", "")
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	assert.Equal(t, uint16(8080), boxes.unexposeFor)
+	assert.NotContains(t, rec.Body.String(), `"ports"`, "the sandbox names the exposure no more")
+}
+
+// TestExposeSandboxPortMapsItsRefusals: a port already exposed is a conflict, one that was
+// never exposed is not found, and a node that serves no preview proxy says so rather than
+// pretending the route does not exist.
+func TestExposeSandboxPortMapsItsRefusals(t *testing.T) {
+	boxes := &fakeSandboxes{records: map[string]sandbox.Record{"a": {ID: "a", State: sandbox.StateReady}}}
+	srv, store := sandboxServer(t, boxes)
+
+	admin, _, err := store.Create("admin", RoleAdmin)
+	require.NoError(t, err)
+
+	boxes.exposeErr = sandbox.ErrExposed
+	rec := sandboxRequest(t, srv, admin, http.MethodPost, "/v1/sandboxes/a/ports", `{"guestPort":8080}`)
+	assert.Equal(t, http.StatusConflict, rec.Code, rec.Body.String())
+
+	boxes.exposeErr = sandbox.ErrNotReady
+	rec = sandboxRequest(t, srv, admin, http.MethodPost, "/v1/sandboxes/b/ports", `{"guestPort":8080}`)
+	assert.Equal(t, http.StatusConflict, rec.Code, rec.Body.String())
+
+	boxes.exposeErr = nil
+	boxes.unexposeErr = sandbox.ErrNotExposed
+	rec = sandboxRequest(t, srv, admin, http.MethodDelete, "/v1/sandboxes/a/ports/8080", "")
+	assert.Equal(t, http.StatusNotFound, rec.Code, rec.Body.String())
+
+	// Port 0, a TTL below -1 and a port that is not a number are the request's mistake,
+	// not the node's: the contract says 0 is "the node's default" and -1 is "never", so a
+	// third meaning must not collapse into one of them.
+	rec = sandboxRequest(t, srv, admin, http.MethodPost, "/v1/sandboxes/a/ports", `{"guestPort":0}`)
+	assert.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+	rec = sandboxRequest(t, srv, admin, http.MethodPost, "/v1/sandboxes/a/ports", `{"guestPort":8080,"ttlSeconds":-5}`)
+	require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+	assert.Equal(t, "invalid_ttl", decodeErrorBody(t, rec).Error.Details["reason"])
+	rec = sandboxRequest(t, srv, admin, http.MethodDelete, "/v1/sandboxes/a/ports/eighty", "")
+	assert.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
 }
 
 // TestRunnerWithoutASandboxSelectorFailsClosed pins the other refusal a sandbox exec

@@ -2967,6 +2967,117 @@ paths:
           content:
             application/vnd.swarmcracker.v1+json:
               schema: { $ref: "#/components/schemas/ErrorDocument" }
+  /v1/sandboxes/{id}/ports:
+    post:
+      operationId: exposeSandboxPort
+      summary: Serve one guest port of a sandbox on this node's host
+      description: >
+        Requires sandboxes:ports, and the caller's sandbox selectors must name this
+        sandbox (403 details.reason "sandbox_selector_mismatch" otherwise; a runner
+        token with no sandbox selector is 403 "sandbox_selector_required"). The body
+        is a SandboxPortRequest. The response carries the exposure and the preview
+        token that opens it: a request to the host address without that token is
+        answered 401, so exposing a port does not put a guest service on the host
+        unauthenticated. The token is in this response and never again. A port that is
+        already exposed is 409 conflict; a sandbox that is not ready (created, failed
+        or stopped) is 409 with the reason in the message; a node that serves no
+        preview proxy is 501 not_implemented. The attempt is audited as sandbox.expose.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: The sandbox id.
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/vnd.swarmcracker.v1+json:
+            schema: { $ref: "#/components/schemas/SandboxPortRequest" }
+      responses:
+        "201":
+          description: The exposure, with its token
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+            Idempotency-Replayed: { $ref: "#/components/headers/Idempotency-Replayed" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/SandboxPortExposure" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "4XX":
+          description: Typed failure
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
+  /v1/sandboxes/{id}/ports/{port}:
+    delete:
+      operationId: unexposeSandboxPort
+      summary: Stop serving one exposed guest port
+      description: >
+        Requires sandboxes:ports and the caller's sandbox selectors, exactly as
+        exposing does. The listener is closed and the sandbox's own policy stops
+        accepting the port, so a request that used to reach the guest reaches nothing.
+        The response is the sandbox as it now stands. A port that is not exposed is
+        404 not_found.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: The sandbox id.
+        - name: port
+          in: path
+          required: true
+          schema: { type: integer, minimum: 1, maximum: 65535 }
+          description: The guest port to stop serving.
+      responses:
+        "200":
+          description: The sandbox, without that exposure
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/SandboxDocument" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "4XX":
+          description: Typed failure
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
   /v1/sandboxes/{id}/checkpoints:
     post:
       operationId: createSandboxCheckpoint
@@ -5090,6 +5201,14 @@ components:
           description: How the sandbox's own disk was materialized from the template.
         agentVersion: { type: string }
         bootId: { type: string }
+        ports:
+          type: array
+          description: >
+            The guest ports this node serves to its own host through the preview
+            proxy: one entry per exposed port, with the host address that serves it.
+            The token that opens one is not here: it is returned once, by the call
+            that exposed the port.
+          items: { $ref: "#/components/schemas/SandboxPort" }
 
     SandboxList:
       type: object
@@ -5293,6 +5412,10 @@ components:
         instanceRecordRemoved: { type: boolean }
         recordRemoved: { type: boolean }
         apiTokensRevoked: { type: integer, minimum: 0 }
+        previewsClosed:
+          type: integer
+          minimum: 0
+          description: How many preview listeners an exposed guest port was served on, closed by this teardown.
 
     SandboxRemoval:
       type: object
@@ -5452,3 +5575,68 @@ components:
           type: string
           description: The bearer secret. It is present in this response and never again.
         expiresAt: { type: string, format: date-time }
+
+    SandboxPort:
+      type: object
+      required: [guestPort, address, url]
+      description: >
+        One guest port reached from the host through this node's preview proxy. The
+        address is on the node's loopback, so the exposure is reachable from the host
+        and not from the network; the guest's own port is kept, so a service that
+        prints its own URL prints something still true here; and the address is
+        derived from the sandbox, so two sandboxes may expose one guest port without
+        meeting.
+      properties:
+        guestPort:
+          type: integer
+          minimum: 1
+          maximum: 65535
+          description: The port inside the guest, and the port the host address serves.
+        address:
+          type: string
+          description: The host address the preview listens on, "address:port".
+        url:
+          type: string
+          description: The address as a URL, without the token.
+        expiresAt:
+          type: string
+          format: date-time
+          description: >
+            When the exposure stops serving. Once it has, the listener answers 410
+            gone until the port is un-exposed or the sandbox is removed. Absent means
+            it never expires and lives exactly as long as its sandbox.
+
+    SandboxPortRequest:
+      type: object
+      required: [guestPort]
+      properties:
+        guestPort:
+          type: integer
+          minimum: 1
+          maximum: 65535
+          description: The guest port to serve on the host.
+        ttlSeconds:
+          type: integer
+          minimum: -1
+          description: >
+            How long the exposure is served in seconds: 0 means the node's default,
+            -1 means it never expires, and a positive value is the TTL.
+
+    SandboxPortExposure:
+      type: object
+      required: [schemaVersion, kind, sandbox, port, token, authenticatedUrl]
+      description: >
+        An exposure, with the token that opens it. The token — and the URL that
+        carries it — is in this response and never again: the node keeps only the
+        digest, so an exposure whose URL a caller lost has to be exposed again.
+      properties:
+        schemaVersion: { type: integer, enum: [1] }
+        kind: { type: string, enum: [SandboxPortExposure] }
+        sandbox: { type: string }
+        port: { $ref: "#/components/schemas/SandboxPort" }
+        token:
+          type: string
+          description: The preview token. Present in this response and never again.
+        authenticatedUrl:
+          type: string
+          description: "The URL to open: the port's own URL with the token in it."
