@@ -145,7 +145,11 @@ func run(ctx *cli.Context) error {
 	}
 	defer func() { _ = cluster.Close() }()
 
-	manager, tokens, err := build(ctx)
+	// One bus, two users: the manager's own loops publish on it (a reap, a reconcile
+	// pass) and the API server subscribes to it, so a watcher sees a change whether a
+	// caller asked for it or this node did.
+	events := sandbox.NewEvents()
+	manager, tokens, err := build(ctx, events)
 	if err != nil {
 		return err
 	}
@@ -154,6 +158,7 @@ func run(ctx *cli.Context) error {
 		Client:        cluster,
 		Tokens:        tokens,
 		Sandboxes:     manager,
+		SandboxEvents: events,
 		CertDir:       certDir(ctx),
 		ServerVersion: Version,
 		Capabilities:  []string{"read", "write", "sandboxes"},
@@ -209,7 +214,7 @@ func run(ctx *cli.Context) error {
 // The wiring itself lives in pkg/sandboxd because a host test has to be able to
 // build the same manager the daemon builds, from values it names itself; what
 // stays here is the part only this command has, which is reading flags.
-func build(ctx *cli.Context) (*sandbox.Manager, *apihttp.TokenStore, error) {
+func build(ctx *cli.Context, events *sandbox.Events) (*sandbox.Manager, *apihttp.TokenStore, error) {
 	first, err := positiveFlag(ctx, "jailer-uid-first", defaultUIDFirst)
 	if err != nil {
 		return nil, nil, err
@@ -243,6 +248,7 @@ func build(ctx *cli.Context) (*sandbox.Manager, *apihttp.TokenStore, error) {
 		DefaultTTL:      ctx.Duration("default-ttl"),
 		ReadyTimeout:    ctx.Duration("ready-timeout"),
 		TokenFile:       tokenFile(ctx),
+		Events:          events,
 
 		// The admission limits. pkg/sandbox fills in its own defaults for a zero
 		// field and refuses a negative one, so an operator's typo stops the daemon

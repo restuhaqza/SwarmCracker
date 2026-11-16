@@ -20,80 +20,17 @@ import (
 	"github.com/restuhaqza/swarmcracker/pkg/sandbox"
 )
 
-// TestSandboxEventsBusDeliversToEverySubscriber pins the bus's fan-out: one change,
-// every watcher, and each one gets its own copy of the same document.
-func TestSandboxEventsBusDeliversToEverySubscriber(t *testing.T) {
-	bus := NewSandboxEvents()
-	first, cancelFirst := bus.Subscribe()
-	defer cancelFirst()
-	second, cancelSecond := bus.Subscribe()
-	defer cancelSecond()
-
-	sent := v1.NewEvent("", "2026-11-13T10:00:00Z", v1.EventTypeSandboxCreated,
-		v1.EventResource{Kind: v1.KindSandbox, ID: "sbx-1"}, "")
-	bus.Publish(sent)
-
-	for name, ch := range map[string]<-chan v1.Event{"first": first, "second": second} {
-		select {
-		case got := <-ch:
-			assert.Equal(t, sent.Type, got.Type, name)
-			assert.Equal(t, "sbx-1", got.Resource.ID, name)
-		case <-time.After(2 * time.Second):
-			t.Fatalf("%s subscriber got no event", name)
-		}
-	}
-}
-
-// TestSandboxEventsBusDropsRatherThanBlocking pins the rule that keeps a watcher from
-// stalling a create: a subscriber that has fallen a whole buffer behind loses the
-// events after it, and the publisher still returns.
-func TestSandboxEventsBusDropsRatherThanBlocking(t *testing.T) {
-	bus := NewSandboxEvents()
-	slow, cancel := bus.Subscribe()
-	defer cancel()
-
-	event := v1.NewEvent("", "", v1.EventTypeSandboxCreated, v1.EventResource{Kind: v1.KindSandbox, ID: "sbx"}, "")
-	// One more than the buffer, from a goroutine so a blocking Publish fails the test
-	// instead of hanging it.
-	published := make(chan struct{})
-	go func() {
-		for i := 0; i <= sandboxEventBuffer; i++ {
-			bus.Publish(event)
-		}
-		close(published)
-	}()
+// nextSandboxChange is the change a route (or a loop) published, as a watcher of the bus
+// sees it.
+func nextSandboxChange(t *testing.T, watcher <-chan sandbox.Change) sandbox.Change {
+	t.Helper()
 	select {
-	case <-published:
+	case change := <-watcher:
+		return change
 	case <-time.After(2 * time.Second):
-		t.Fatal("Publish blocked on a subscriber that is not reading")
+		t.Fatal("nothing was published on the sandbox bus")
+		return sandbox.Change{}
 	}
-
-	delivered := 0
-	for {
-		select {
-		case <-slow:
-			delivered++
-			continue
-		default:
-		}
-		break
-	}
-	assert.Equal(t, sandboxEventBuffer, delivered, "the buffer, and nothing beyond it")
-}
-
-// TestSandboxEventsBusCancelEndsTheSubscription pins the lifecycle: cancel closes the
-// channel a reader is selecting on, is safe to call twice, and publishing afterwards is
-// not a panic.
-func TestSandboxEventsBusCancelEndsTheSubscription(t *testing.T) {
-	bus := NewSandboxEvents()
-	ch, cancel := bus.Subscribe()
-
-	cancel()
-	_, open := <-ch
-	assert.False(t, open, "a cancelled subscription is a closed channel")
-
-	bus.Publish(v1.NewEvent("", "", v1.EventTypeSandboxCreated, v1.EventResource{Kind: v1.KindSandbox, ID: "sbx"}, ""))
-	cancel() // idempotent: a handler defers it and may also call it on the way out
 }
 
 // failedCreate is fakeSandboxes whose create leaves a failed record behind, which is
@@ -124,23 +61,24 @@ func TestCreateSandboxPublishesACreatedEvent(t *testing.T) {
 		`{"template":"base","id":"sbx-1","owner":"ci"}`)
 	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
 
-	select {
-	case event := <-watcher:
-		assert.Equal(t, "sandbox.created", event.Type)
-		assert.Equal(t, v1.EventTypeSandboxCreated, event.Type)
-		assert.Equal(t, v1.SchemaVersion, event.SchemaVersion)
-		assert.Equal(t, v1.KindEvent, event.Kind)
-		assert.Equal(t, v1.KindSandbox, event.Resource.Kind)
-		assert.Equal(t, "sbx-1", event.Resource.ID)
-		assert.Empty(t, event.Cursor, "a sandbox event is live-only: it has no watch cursor")
-		assert.NotEmpty(t, event.At)
-		object, ok := event.Object.(v1.Sandbox)
-		require.True(t, ok, "the event carries the sandbox document, got %T", event.Object)
-		assert.Equal(t, "sbx-1", object.ID)
-		assert.Equal(t, "base", object.Template)
-	case <-time.After(2 * time.Second):
-		t.Fatal("creating a sandbox published no event")
-	}
+	change := nextSandboxChange(t, watcher)
+	assert.Equal(t, sandbox.ChangeCreated, change.Kind, "the bus carries what happened, not the wire type")
+	assert.Equal(t, "sbx-1", change.ID)
+	require.NotNil(t, change.Record)
+
+	event := sandboxChangeEvent(change)
+	assert.Equal(t, "sandbox.created", event.Type)
+	assert.Equal(t, v1.EventTypeSandboxCreated, event.Type)
+	assert.Equal(t, v1.SchemaVersion, event.SchemaVersion)
+	assert.Equal(t, v1.KindEvent, event.Kind)
+	assert.Equal(t, v1.KindSandbox, event.Resource.Kind)
+	assert.Equal(t, "sbx-1", event.Resource.ID)
+	assert.Empty(t, event.Cursor, "a sandbox event is live-only: it has no watch cursor")
+	assert.NotEmpty(t, event.At)
+	object, ok := event.Object.(v1.Sandbox)
+	require.True(t, ok, "the event carries the sandbox document, got %T", event.Object)
+	assert.Equal(t, "sbx-1", object.ID)
+	assert.Equal(t, "base", object.Template)
 }
 
 // TestFailedCreatePublishesAFailedEvent pins the two halves of a failed create: one that
@@ -160,14 +98,15 @@ func TestFailedCreatePublishesAFailedEvent(t *testing.T) {
 		rec := sandboxRequest(t, srv, admin, http.MethodPost, "/v1/sandboxes", `{"template":"base","id":"sbx-1"}`)
 		require.NotEqual(t, http.StatusCreated, rec.Code)
 
-		select {
-		case event := <-watcher:
-			assert.Equal(t, "sandbox.failed", event.Type)
-			assert.Equal(t, v1.EventTypeSandboxFailed, event.Type)
-			assert.Equal(t, "sbx-1", event.Resource.ID)
-		case <-time.After(2 * time.Second):
-			t.Fatal("a failed create published no event")
-		}
+		change := nextSandboxChange(t, watcher)
+		assert.Equal(t, sandbox.ChangeFailed, change.Kind)
+		require.NotNil(t, change.Record)
+		assert.Equal(t, "the disk could not be copied", change.Record.Reason)
+
+		event := sandboxChangeEvent(change)
+		assert.Equal(t, "sandbox.failed", event.Type)
+		assert.Equal(t, v1.EventTypeSandboxFailed, event.Type)
+		assert.Equal(t, "sbx-1", event.Resource.ID)
 	})
 
 	t.Run("a refused create is silent", func(t *testing.T) {
@@ -187,8 +126,8 @@ func TestFailedCreatePublishesAFailedEvent(t *testing.T) {
 		require.Equal(t, http.StatusBadRequest, rec.Code)
 
 		select {
-		case event := <-watcher:
-			t.Fatalf("a create refused before a record existed published %q", event.Type)
+		case change := <-watcher:
+			t.Fatalf("a create refused before a record existed published %q", change.Kind)
 		case <-time.After(100 * time.Millisecond):
 		}
 	})
@@ -208,15 +147,15 @@ func TestRemoveSandboxPublishesARemovalWithoutAnObject(t *testing.T) {
 	rec := sandboxRequest(t, srv, admin, http.MethodDelete, "/v1/sandboxes/sbx-1", "")
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 
-	select {
-	case event := <-watcher:
-		assert.Equal(t, "sandbox.removed", event.Type)
-		assert.Equal(t, v1.KindSandbox, event.Resource.Kind)
-		assert.Equal(t, "sbx-1", event.Resource.ID)
-		assert.Nil(t, event.Object, "a removed sandbox has no document to carry")
-	case <-time.After(2 * time.Second):
-		t.Fatal("removing a sandbox published no event")
-	}
+	change := nextSandboxChange(t, watcher)
+	assert.Equal(t, sandbox.ChangeRemoved, change.Kind)
+	assert.Nil(t, change.Record, "a removed sandbox has no record to carry")
+
+	event := sandboxChangeEvent(change)
+	assert.Equal(t, "sandbox.removed", event.Type)
+	assert.Equal(t, v1.KindSandbox, event.Resource.Kind)
+	assert.Equal(t, "sbx-1", event.Resource.ID)
+	assert.Nil(t, event.Object, "a removed sandbox has no document to carry")
 }
 
 // TestForkPublishesOneCreatedEventPerClone pins that a clone announces itself as what it
@@ -235,15 +174,15 @@ func TestForkPublishesOneCreatedEventPerClone(t *testing.T) {
 
 	seen := make(map[string]bool)
 	for i := 0; i < 2; i++ {
-		select {
-		case event := <-watcher:
-			assert.Equal(t, v1.EventTypeSandboxCreated, event.Type)
-			seen[event.Resource.ID] = true
-		case <-time.After(2 * time.Second):
-			t.Fatalf("fork published %d events, want 2", i)
-		}
+		change := nextSandboxChange(t, watcher)
+		assert.Equal(t, sandbox.ChangeCreated, change.Kind, "a clone announces itself as what it is: created")
+
+		event := sandboxChangeEvent(change)
+		assert.Equal(t, v1.EventTypeSandboxCreated, event.Type)
+		seen[event.Resource.ID] = true
 	}
-	assert.Equal(t, map[string]bool{"clone-0": true, "clone-1": true}, seen)
+	assert.Equal(t, map[string]bool{"clone-0": true, "clone-1": true}, seen,
+		"two clones, two changes: a fork of two is two sandboxes that were created")
 }
 
 // TestClusterEventKindsStripsTheLocalKind pins the split: the cluster client is given
@@ -458,4 +397,57 @@ func TestSandboxEventStreamHeartbeats(t *testing.T) {
 			nextLineContaining(t, reader, tc.want)
 		})
 	}
+}
+
+// TestSandboxEventTypesAreTheContractsNames pins the one rule that turns a change kind into
+// an event type against the v1 constants the contract documents: the resource's kind,
+// lowercased, then the change's own name. A renamed constant fails here rather than
+// appearing mid-stream as a type nobody filters on.
+func TestSandboxEventTypesAreTheContractsNames(t *testing.T) {
+	assert.Equal(t, v1.EventTypeSandboxCreated, sandboxEventType(sandbox.ChangeCreated))
+	assert.Equal(t, v1.EventTypeSandboxFailed, sandboxEventType(sandbox.ChangeFailed))
+	assert.Equal(t, v1.EventTypeSandboxRemoved, sandboxEventType(sandbox.ChangeRemoved))
+}
+
+// TestSandboxEventStreamCarriesWhatTheNodesLoopsPublish is the other origin of a change: not
+// an API call, but the node's own loops — the reconcile pass failing a sandbox whose VMM is
+// gone, and the reaper taking an idle one back. They publish on the same bus the API
+// subscribes to, so a watcher sees them on the same stream, with the same rules (no cursor;
+// the object only when the caller asked for it, and never for a removal).
+func TestSandboxEventStreamCarriesWhatTheNodesLoopsPublish(t *testing.T) {
+	client := &fakeClient{}
+	boxes := &fakeSandboxes{records: map[string]sandbox.Record{}}
+	srv, store := sandboxEventServer(t, boxes, client, 0)
+	admin, _, err := store.Create("admin", RoleAdmin)
+	require.NoError(t, err)
+
+	live := httptest.NewServer(srv.Handler())
+	defer live.Close()
+
+	reader, closeStream := openEventStream(t, live, admin, "/v1/events?types=sandbox&include=object", v1.NDJSONMediaType)
+	defer closeStream()
+
+	// What a reconcile pass publishes: the record as it was marked, with the reason a
+	// watcher cannot read anywhere else.
+	lost := sandbox.Record{
+		ID: "sbx-lost", State: sandbox.StateFailed, Updated: time.Now().UTC(),
+		Reason: "the sandbox's VMM is gone: the instance is no longer in this node's registry",
+	}
+	srv.cfg.SandboxEvents.Publish(sandbox.RecordChange(sandbox.ChangeFailed, lost, time.Now()))
+	// What the reaper publishes: a removal with no record, because there is none any more.
+	srv.cfg.SandboxEvents.Publish(sandbox.RemovalChange("sbx-reaped", time.Now()))
+
+	failed := nextEventLine(t, reader)
+	assert.Contains(t, failed, `"type":"sandbox.failed"`)
+	assert.Contains(t, failed, `"id":"sbx-lost"`)
+	assert.Contains(t, failed, `"cursor":""`, "a change from a loop has no watch cursor either")
+	assert.Contains(t, failed, "no longer in this node's registry",
+		"the reason a watcher acts on travels with the event")
+
+	removed := nextEventLine(t, reader)
+	assert.Contains(t, removed, `"type":"sandbox.removed"`)
+	assert.Contains(t, removed, `"id":"sbx-reaped"`)
+	assert.NotContains(t, removed, `"object"`, "a removal carries no object, even with include=object")
+
+	assert.Nil(t, client.gotEventOpts.Types, "a sandbox-only stream still opens no cluster watch")
 }

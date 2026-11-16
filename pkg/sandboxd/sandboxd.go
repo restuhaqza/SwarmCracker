@@ -74,6 +74,11 @@ type Config struct {
 	// DefaultTTL is how long a sandbox may idle before the reaper takes it back,
 	// for a sandbox created without a TTL of its own.
 	DefaultTTL time.Duration
+	// Events is the bus the node's sandbox changes are published on. The daemon builds
+	// one and hands the same value to the API server, so a change the manager's own
+	// loops make — a reap, a reconcile — reaches the same stream a route's change does.
+	// Nil publishes nothing, which is what a test that only reads records wants.
+	Events *sandbox.Events
 	// ReadyTimeout is how long a sandbox's boot may take to reach the guest
 	// agent's hello.
 	ReadyTimeout time.Duration
@@ -174,6 +179,7 @@ func New(cfg Config) (*sandbox.Manager, *apihttp.TokenStore, error) {
 		VCPUs:           cfg.VCPUs,
 		MemoryMB:        cfg.MemoryMB,
 		DefaultTTL:      cfg.DefaultTTL,
+		Events:          cfg.Events,
 		Quota:           cfg.Quota,
 		Checkpoints:     cfg.Checkpoints,
 		CheckpointBlobs: cfg.CheckpointBlobs,

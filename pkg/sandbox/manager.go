@@ -110,6 +110,12 @@ type Config struct {
 	// nothing to do, which is the safe default: a node that never configured a TTL
 	// must not start deleting sandboxes someone is using.
 	DefaultTTL time.Duration
+	// Events is the bus this node's changes are published on: a create, a failure, a
+	// removal — whether the API asked for it or one of this manager's own loops did
+	// (pkg/sandbox/events.go). Nil means nothing is published, which is what a test
+	// that only cares about the records gets; the daemon hands in the same bus the
+	// API subscribes to, so a watcher sees both origins on one stream.
+	Events *Events
 	// Quota is what this node admits: how many sandboxes one owner may hold, and how
 	// much memory and disk all of them may occupy together (admission.go). Every
 	// field's zero means the default above it, and a negative value is refused by New
@@ -592,11 +598,28 @@ func (m *Manager) List() ([]Record, []string, error) {
 		if rec.State == StateReady && !m.running(rec.ID) {
 			if failed, err := m.markFailed(&rec, errVMGone); err == nil {
 				rec = failed
+				// The reconcile pass is one of the two places a sandbox turns failed
+				// without a caller asking for it, so it announces it: a watcher that
+				// only saw the API's changes would otherwise learn about a lost
+				// sandbox by polling, and the record's reason is what it needs.
+				m.publish(RecordChange(ChangeFailed, rec, m.now()))
 			}
 		}
 		out = append(out, rec)
 	}
 	return out, skipped, nil
+}
+
+// publish reports one change on the node's bus, if this node has one.
+//
+// A manager without a bus (a test, an embedder that never wired one) publishes into
+// nothing rather than failing an operation over a notification: the record is the durable
+// answer, and the stream is a convenience on top of it.
+func (m *Manager) publish(change Change) {
+	if m.cfg.Events == nil {
+		return
+	}
+	m.cfg.Events.Publish(change)
 }
 
 // errVMGone is the reason a sandbox gets when its VMM is no longer there.

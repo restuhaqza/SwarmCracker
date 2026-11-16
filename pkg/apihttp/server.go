@@ -23,6 +23,7 @@ import (
 
 	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
 	"github.com/restuhaqza/swarmcracker/pkg/output"
+	"github.com/restuhaqza/swarmcracker/pkg/sandbox"
 )
 
 const (
@@ -136,7 +137,7 @@ type Config struct {
 	// has something to read. It is separate from Sandboxes because the two answer
 	// different questions: whether a control plane exists, and where its changes
 	// are announced.
-	SandboxEvents *SandboxEvents
+	SandboxEvents *sandbox.Events
 	// Audit is the manager-local audit log. It is optional: a nil store makes
 	// recordAudit a no-op and GET /v1/audit answer 501.
 	Audit *AuditStore
@@ -214,7 +215,7 @@ func New(cfg Config) (*Server, error) {
 	// is listening, and a stream subscribes without checking whether a route ever
 	// publishes.
 	if cfg.SandboxEvents == nil {
-		cfg.SandboxEvents = NewSandboxEvents()
+		cfg.SandboxEvents = sandbox.NewEvents()
 	}
 
 	s := &Server{cfg: cfg, mux: http.NewServeMux()}
