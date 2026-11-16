@@ -19,7 +19,8 @@ type Event struct {
 }
 
 // The sandbox event types, emitted by the node that serves the sandboxes rather
-// than by the cluster watch (pkg/apihttp/sandbox_events.go).
+// than by the cluster watch (the node's bus is pkg/sandbox/events.go, and pkg/apihttp
+// renders its changes as these documents).
 //
 // They are spelled exactly like every other event type — the resource's kind,
 // lowercased, then the past-tense action — so one `types=sandbox` filter and one

@@ -507,8 +507,8 @@ selected with `types=sandbox`:
 | Type | When |
 |---|---|
 | `sandbox.created` | A sandbox this node's API created, and each clone a fork made |
-| `sandbox.failed` | A create that left a failed record behind; `object.reason` says why |
-| `sandbox.removed` | A sandbox an API call ended |
+| `sandbox.failed` | A create that left a failed record behind, or a sandbox a reconcile pass found behind a VMM that is gone; `object.reason` says why |
+| `sandbox.removed` | A sandbox an API call ended, or an idle one the reaper took back |
 
 ```bash
 # SSE by default; the node's own events are selected with types=sandbox.
@@ -523,10 +523,13 @@ and a watcher that connects after a change does not receive it — dedupe by
 `resource.id`, and read `sandbox ls` for the current state rather than replaying a
 history that does not exist.
 
-Two changes are **not** on the stream yet, because they happen in the node's own loops
-rather than in an API call: a removal the reaper performs, and a reconcile pass that
-marks a lost sandbox `failed`. Publishing those needs the publisher to live inside the
-control plane (`pkg/sandbox`), which is the next step for this stream.
+The stream carries a change whether a caller asked for it or this node did. An idle sandbox
+the reaper takes back arrives as `sandbox.removed` — with no object, exactly as a removal
+through the API carries none, because the record is gone by then — and a sandbox the
+reconcile pass finds behind a VMM that is gone arrives as `sandbox.failed`, whose
+`object.reason` says so. Both origins publish on one bus (`pkg/sandbox/events.go`) that the
+API subscribes to, so a watcher needs neither a second connection nor polling to learn that
+a sandbox died or was reclaimed.
 
 ## Not in this slice
 

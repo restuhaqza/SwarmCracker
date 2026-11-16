@@ -11,6 +11,7 @@ import (
 
 	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
 	"github.com/restuhaqza/swarmcracker/pkg/output"
+	"github.com/restuhaqza/swarmcracker/pkg/sandbox"
 )
 
 const (
@@ -134,10 +135,11 @@ type eventSources struct {
 	cluster <-chan v1.Event
 	// errs carries the cluster watch's failures. Nil with cluster.
 	errs <-chan error
-	// local is this node's sandbox events, or nil when the caller did not ask for
+	// local is this node's sandbox changes, or nil when the caller did not ask for
 	// them: a nil channel never fires in a select, which is how "not subscribed" is
-	// expressed.
-	local <-chan v1.Event
+	// expressed. What arrives is a change from pkg/sandbox's bus — the same one the
+	// reaper and the reconcile pass publish on — and sandboxChangeEvent renders it.
+	local <-chan sandbox.Change
 	// cancel ends the bus subscription, if one was made.
 	cancel func()
 }
@@ -208,8 +210,8 @@ func (s *Server) writeEventStream(w http.ResponseWriter, r *http.Request, opts v
 			if !ok || !s.writeEvent(w, r, opts, format, selector, flush, event) {
 				return
 			}
-		case event, ok := <-sources.local:
-			if !ok || !s.writeEvent(w, r, opts, format, selector, flush, event) {
+		case change, ok := <-sources.local:
+			if !ok || !s.writeEvent(w, r, opts, format, selector, flush, sandboxChangeEvent(change)) {
 				return
 			}
 		case err, ok := <-sources.errs:

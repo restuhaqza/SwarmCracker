@@ -657,8 +657,9 @@ A node that serves sandboxes also streams its own `sandbox.*` events on this
 route, selected with `types=sandbox`:
 
 - `sandbox.created` — a sandbox this node's API created, and each clone a fork
-  made; `sandbox.failed` — a create that left a failed record behind;
-  `sandbox.removed` — a sandbox an API call ended.
+  made; `sandbox.failed` — a create that left a failed record behind, or a
+  sandbox a reconcile pass found behind a VMM that is gone; `sandbox.removed` —
+  a sandbox an API call ended, or an idle one the reaper took back.
 - A sandbox is not a SwarmKit object, so nothing watches it for the API: a
   sandbox event carries an empty `cursor` and is live-only. `since` does not
   resume across one, and a watcher that connects after a change does not receive
@@ -666,8 +667,9 @@ route, selected with `types=sandbox`:
 - `include=object` embeds the sandbox document, except on a removal, whose event
   carries only the id (the record is gone by then, and a sandbox's id is its
   whole identity).
-- A removal the reaper performs is not on this stream: it happens in the node's
-  own loop rather than in an API call.
+- The node's own loops publish on the same bus: a removal the reaper performs and
+  a sandbox a reconcile pass marks failed reach this stream with no caller
+  involved.
 
 ### Task exec, attach, logs, files and health
 

@@ -83,6 +83,10 @@ func (m *Manager) Reap(ctx context.Context, now time.Time) ([]Reaped, error) {
 				Msg("Could not reap an idle sandbox; it stays for the next pass")
 		} else {
 			entry.Freed = freed
+			// A removal nobody asked for is still a removal a watcher has to hear
+			// about: it is published after it succeeded, like every other change, and
+			// it carries no record because there is none any more.
+			m.publish(RemovalChange(rec.ID, m.now()))
 			log.Info().
 				Str("sandbox_id", rec.ID).
 				Str("state", string(rec.State)).

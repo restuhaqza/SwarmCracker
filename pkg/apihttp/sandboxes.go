@@ -166,13 +166,13 @@ func (s *Server) createSandbox(w http.ResponseWriter, r *http.Request) {
 		// quota, a template this host cannot boot — leaves nothing, so there is
 		// nothing to announce.
 		if rec.ID != "" && rec.State == sandbox.StateFailed {
-			s.publishSandboxEvent(v1.EventTypeSandboxFailed, rec)
+			s.publishSandboxEvent(sandbox.ChangeFailed, rec)
 		}
 		s.writeError(w, r, sandboxAPIError(err))
 		return
 	}
 	s.recordSandboxAudit(r, "sandbox.create", rec.ID, "ok")
-	s.publishSandboxEvent(v1.EventTypeSandboxCreated, rec)
+	s.publishSandboxEvent(sandbox.ChangeCreated, rec)
 
 	// 201 with the document: the sandbox exists and is ready (the create returns only
 	// once the guest agent answered), which is what the status says.
@@ -732,7 +732,7 @@ func (s *Server) fork(w http.ResponseWriter, r *http.Request, run func(sandbox.F
 		// A clone is a sandbox that was created, so it announces itself as one: a
 		// separate `sandbox.forked` type would make a consumer that watches sandboxes
 		// appear handle two types for the same fact.
-		s.publishSandboxEvent(v1.EventTypeSandboxCreated, rec)
+		s.publishSandboxEvent(sandbox.ChangeCreated, rec)
 	}
 	doc := v1.NewSandboxList(items)
 	// A fork's checkpoint is part of its answer: the fork routes take (or name) an image,
