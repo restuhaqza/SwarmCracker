@@ -50,10 +50,73 @@ type Sandbox struct {
 	// DiskCopy is how the sandbox's own disk was materialized from the template:
 	// reflink, sparse or full.
 	DiskCopy string `json:"diskCopy,omitempty"`
+	// Ports are the guest ports this node serves to its host through a preview proxy:
+	// each one an address on the host, the guest port behind it, and when the exposure
+	// ends. The token that opens one is not here — it is returned once, by the call that
+	// exposed the port.
+	Ports []SandboxPort `json:"ports,omitempty"`
 	// AgentVersion and BootID are what the guest answered when it proved itself
 	// ready: the agent build it runs and this boot's identity.
 	AgentVersion string `json:"agentVersion,omitempty"`
 	BootID       string `json:"bootId,omitempty"`
+}
+
+// SandboxPort is one guest port reached from the host through this node's preview proxy.
+//
+// The address is on the host's loopback, which is what makes a preview a preview: it is
+// reachable from the machine the sandbox runs on and not from the network. The guest's own
+// port is kept, so a service that prints its own URL prints something still true here, and
+// the address is derived from the sandbox, so two sandboxes can expose the same guest port
+// without meeting.
+type SandboxPort struct {
+	GuestPort uint16 `json:"guestPort"`
+	// Address is the host address the preview listens on, "address:port".
+	Address string `json:"address"`
+	// URL is the address as a URL without the token.
+	URL string `json:"url"`
+	// ExpiresAt is when the exposure stops serving, or empty for one that never does.
+	// Once it has, the listener answers 410 gone until the port is un-exposed or the
+	// sandbox is removed.
+	ExpiresAt string `json:"expiresAt,omitempty"`
+}
+
+// SandboxPortRequest is the body of POST /v1/sandboxes/{id}/ports: a request to expose one
+// guest port on the host.
+//
+// GuestPort is required. TTLSeconds is how long the exposure is served for: zero means the
+// node's default, and -1 means it never expires.
+type SandboxPortRequest struct {
+	GuestPort  uint16 `json:"guestPort"`
+	TTLSeconds int64  `json:"ttlSeconds,omitempty"`
+}
+
+// SandboxPortExposure is the response to POST /v1/sandboxes/{id}/ports: the exposure, and
+// the token that opens it.
+//
+// Token and its URL are present exactly once, in this response, and never again: the node
+// keeps only the digest of the token, so an exposure whose URL a caller lost cannot be
+// recovered by reading the sandbox — the port has to be exposed again.
+type SandboxPortExposure struct {
+	SchemaVersion int         `json:"schemaVersion"`
+	Kind          string      `json:"kind"`
+	Sandbox       string      `json:"sandbox"`
+	Port          SandboxPort `json:"port"`
+	Token         string      `json:"token"`
+	// Authenticated is the URL a caller opens to use the exposure: the port's own URL
+	// with the token in it.
+	Authenticated string `json:"authenticatedUrl"`
+}
+
+// NewSandboxPortExposure wraps an exposure in the v1 envelope.
+func NewSandboxPortExposure(sandboxID string, port SandboxPort, token, authenticatedURL string) SandboxPortExposure {
+	return SandboxPortExposure{
+		SchemaVersion: SchemaVersion,
+		Kind:          KindSandboxPort,
+		Sandbox:       sandboxID,
+		Port:          port,
+		Token:         token,
+		Authenticated: authenticatedURL,
+	}
 }
 
 // SandboxDocument is a single-resource Sandbox document.
@@ -120,13 +183,16 @@ type SandboxCreate struct {
 // device and policy inside it), the disk, the host's copy of the agent token, the
 // node's instance record and the API tokens scoped to the sandbox.
 type SandboxFreed struct {
-	ProcessStopped         bool `json:"processStopped"`
-	SocketRemoved          bool `json:"socketRemoved"`
-	CgroupRemoved          bool `json:"cgroupRemoved"`
-	JailRemoved            bool `json:"jailRemoved"`
-	NetNSRemoved           bool `json:"netnsRemoved"`
-	TAPRemoved             bool `json:"tapRemoved"`
-	DiskRemoved            bool `json:"diskRemoved"`
+	ProcessStopped bool `json:"processStopped"`
+	SocketRemoved  bool `json:"socketRemoved"`
+	CgroupRemoved  bool `json:"cgroupRemoved"`
+	JailRemoved    bool `json:"jailRemoved"`
+	NetNSRemoved   bool `json:"netnsRemoved"`
+	TAPRemoved     bool `json:"tapRemoved"`
+	DiskRemoved    bool `json:"diskRemoved"`
+	// PreviewsClosed is how many preview listeners were closed: the host sockets that
+	// served an exposed guest port. They are freed before the namespace they relay into.
+	PreviewsClosed         int  `json:"previewsClosed"`
 	AgentCredentialRemoved bool `json:"agentCredentialRemoved"`
 	InstanceRecordRemoved  bool `json:"instanceRecordRemoved"`
 	RecordRemoved          bool `json:"recordRemoved"`

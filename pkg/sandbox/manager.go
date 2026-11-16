@@ -6,9 +6,11 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -31,9 +33,17 @@ import (
 // NetworkPolicy is the node's sandbox networking (pkg/sandbox/netpolicy): the
 // namespace, the fixed tap0 in it, the /30, the default-deny policy and the egress
 // allowlist. Attach is called before a VM is launched and Detach after it is gone.
+//
+// SetInbound is the other direction: the sandbox's own table has to accept the
+// connections the node makes *into* the guest for the ports a caller exposes
+// (preview.go), and it has to stop accepting them when the exposure ends. It takes the
+// namespace and the guest's address rather than an ID, because that is what it is a
+// function of: a daemon that restarted has no lease to consult and still serves the
+// sandboxes that are running.
 type NetworkPolicy interface {
 	Attach(ctx context.Context, id string, allow []string) (netpolicy.Network, error)
 	Detach(ctx context.Context, id string) error
+	SetInbound(ctx context.Context, nsPath, guest string, ports []uint16) error
 }
 
 // Launcher starts one sandbox's microVM. It is snapshot.Launcher, which is the one
@@ -145,6 +155,19 @@ type Config struct {
 	// (pkg/apihttp) and this package must not depend on it.
 	RevokeTokens func(ctx context.Context, sandboxID string) (int, error)
 
+	// PreviewTTL is how long an exposed guest port is served for, for an exposure that
+	// asked for no TTL of its own (preview.go). Zero means never: a node that configured
+	// nothing serves an exposure for exactly as long as its sandbox lives. The daemon
+	// sets a default of its own (--preview-ttl), because an opening into a guest that
+	// nobody remembers to close is a hole; a caller can always ask for a longer one.
+	PreviewTTL time.Duration
+
+	// DialGuest is how a preview relay reaches the guest of a sandbox it serves. Nil is
+	// netpolicy.DialInNamespace, which is the real one: it enters the sandbox's namespace
+	// and dials there, the only place the guest's address means anything. It is a seam
+	// because a unit test has no namespace to enter (preview.go).
+	DialGuest func(ctx context.Context, nsPath, address string) (net.Conn, error)
+
 	// Now is the clock the records are stamped with. Nil is time.Now. It is a seam
 	// because the reaper's whole decision is a comparison against the node's clock.
 	Now func() time.Time
@@ -157,6 +180,13 @@ type Manager struct {
 	cfg   Config
 	now   func() time.Time
 	slots chan struct{}
+
+	// previews are the listeners the preview proxy is serving, by sandbox and guest
+	// port (preview.go). They are the daemon's own memory: a listener is a socket in a
+	// process, so it exists for as long as this manager does, and RestorePreviews is
+	// what reopens what the records still name after a restart.
+	previewMu sync.Mutex
+	previews  map[string]map[uint16]*preview
 }
 
 // New builds a manager, or says which piece of the node is missing. Every check
@@ -682,6 +712,12 @@ func (m *Manager) markFailed(rec *Record, cause error) (Record, error) {
 	next.State = StateFailed
 	next.Reason = cause.Error()
 	next.Updated = m.now().UTC()
+	// A sandbox the node has lost cannot serve a preview either: its listeners are closed
+	// and the record stops naming them, so a caller reads one answer — failed — instead of
+	// a state that is failed and an address that answers 502.
+	if m.closePreviews(next.ID) > 0 {
+		next.Ports = nil
+	}
 	if err := m.cfg.Store.Put(next); err != nil {
 		return *rec, err
 	}

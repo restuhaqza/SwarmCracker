@@ -66,9 +66,13 @@
 package sandbox
 
 import (
+	"crypto/sha256"
 	"errors"
 	"fmt"
+	"net"
+	"net/netip"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -226,6 +230,78 @@ type Record struct {
 	// answered" rather than "the VMM started".
 	AgentVersion string `json:"agentVersion,omitempty"`
 	BootID       string `json:"bootId,omitempty"`
+
+	// Ports are the guest ports this node serves to its own host through a preview
+	// proxy, one entry per exposed port (preview.go). They are the sandbox's because
+	// they die with it: rm closes their listeners, and the namespace they relay into is
+	// the one rm frees.
+	Ports []ExposedPort `json:"ports,omitempty"`
+}
+
+// ExposedPort is one guest port reached from the host through this node's preview
+// proxy (preview.go).
+//
+// It is the exposure as the record keeps it: which guest port, the host address the
+// proxy listens on, when the exposure dies, and the *digest* of the token a caller must
+// present. The token itself is never here — it is printed once, when the port is
+// exposed, and a node keeps only what it needs to check it — so the record can be read
+// by anything that can read the node's state without handing out a credential.
+type ExposedPort struct {
+	// GuestPort is the port inside the guest, and it is also the port the host address
+	// serves: a service that prints its own URL keeps printing something true.
+	GuestPort uint16 `json:"guestPort"`
+	// Address is the loopback address on the host the proxy listens on, derived from the
+	// sandbox's ID (previewAddress) so that it is stable for one sandbox and different
+	// for two — two sandboxes may expose the same guest port without meeting on the
+	// host.
+	Address string `json:"address"`
+	// TokenHash is the SHA-256 of the token that authorizes a request through the proxy,
+	// hex encoded. A connection that presents anything else is answered 401; the proxy
+	// compares digests, so the token itself is not on disk.
+	TokenHash string `json:"tokenHash,omitempty"`
+	// Created is when the port was exposed, and ExpiresAt is when the exposure stops
+	// serving: from then on the listener answers 410 Gone until the exposure is removed
+	// or the sandbox is. A zero ExpiresAt never expires.
+	Created   time.Time `json:"created"`
+	ExpiresAt time.Time `json:"expiresAt,omitempty"`
+}
+
+// Host is the host-side address an exposed port answers on, "address:port".
+func (e ExposedPort) Host() string {
+	return net.JoinHostPort(e.Address, strconv.Itoa(int(e.GuestPort)))
+}
+
+// URL is the base URL of an exposed port, without a token: what a caller adds
+// "?token=..." to, or presents in an Authorization header.
+func (e ExposedPort) URL() string {
+	if e.Address == "" {
+		return ""
+	}
+	return "http://" + e.Host() + "/"
+}
+
+// Expired reports whether the exposure has stopped serving at now.
+func (e ExposedPort) Expired(now time.Time) bool {
+	return !e.ExpiresAt.IsZero() && !now.Before(e.ExpiresAt)
+}
+
+// exposedPort looks up one exposure in a record.
+func (r Record) exposedPort(guestPort uint16) (ExposedPort, bool) {
+	for _, p := range r.Ports {
+		if p.GuestPort == guestPort {
+			return p, true
+		}
+	}
+	return ExposedPort{}, false
+}
+
+// exposedPorts is a record's exposed ports, in the order they are recorded.
+func (r Record) exposedPorts() []uint16 {
+	ports := make([]uint16, 0, len(r.Ports))
+	for _, p := range r.Ports {
+		ports = append(ports, p.GuestPort)
+	}
+	return ports
 }
 
 // TTL is how long this sandbox may idle before the reaper takes it back. Zero means
@@ -321,5 +397,57 @@ func (r Record) validate() error {
 	if r.State == StateFailed && strings.TrimSpace(r.Reason) == "" {
 		return fmt.Errorf("sandbox: record %q is failed but does not say why", r.ID)
 	}
+
+	if err := validateExposedPorts(r.ID, r.Ports); err != nil {
+		return err
+	}
 	return nil
+}
+
+// validateExposedPorts refuses a record's exposures that a reader could not act on: an
+// exposed port is a listener on the host and an opening in the sandbox's own table, so a
+// record that names one must name it exactly. A port the kernel has no meaning for, an
+// address that is not this host's loopback (a preview is reachable from the host, not from
+// the network), a digest that is not a digest, or two exposures of one port would each be a
+// record the node cannot honour.
+func validateExposedPorts(id string, ports []ExposedPort) error {
+	seen := make(map[uint16]bool, len(ports))
+	for _, p := range ports {
+		if p.GuestPort == 0 {
+			return fmt.Errorf("sandbox: record %q exposes port 0, which is not a port", id)
+		}
+		if seen[p.GuestPort] {
+			return fmt.Errorf("sandbox: record %q exposes port %d twice: an exposure is one listener per port", id, p.GuestPort)
+		}
+		seen[p.GuestPort] = true
+
+		addr, err := netip.ParseAddr(p.Address)
+		if err != nil || !addr.Is4() || !addr.IsLoopback() {
+			return fmt.Errorf("sandbox: record %q exposes port %d on %q: want a loopback IPv4 address a caller on this host can reach", id, p.GuestPort, p.Address)
+		}
+		if p.TokenHash != "" && !isHexDigest(p.TokenHash) {
+			return fmt.Errorf("sandbox: record %q exposes port %d with a token hash that is not a SHA-256 digest", id, p.GuestPort)
+		}
+		if p.Created.IsZero() {
+			return fmt.Errorf("sandbox: record %q exposes port %d with no creation time", id, p.GuestPort)
+		}
+		if !p.ExpiresAt.IsZero() && p.ExpiresAt.Before(p.Created) {
+			return fmt.Errorf("sandbox: record %q exposes port %d until %s, before it was exposed at %s",
+				id, p.GuestPort, p.ExpiresAt.Format(time.RFC3339Nano), p.Created.Format(time.RFC3339Nano))
+		}
+	}
+	return nil
+}
+
+// isHexDigest reports whether s is a SHA-256 digest, hex encoded.
+func isHexDigest(s string) bool {
+	if len(s) != sha256.Size*2 {
+		return false
+	}
+	for _, c := range s {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }

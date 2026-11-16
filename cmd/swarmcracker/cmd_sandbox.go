@@ -47,6 +47,8 @@ first; without it every command here reports the socket it could not reach.
   sandbox status <id>         Show a sandbox and what its guest says about itself
   sandbox logs <id>           Print a sandbox's serial console
   sandbox rm <id>             Remove a sandbox and everything it holds
+  sandbox expose <id>         Serve a guest port on this node's host
+  sandbox unexpose <id>       Stop serving an exposed guest port
   sandbox token <id>          Mint a token scoped to one sandbox
   sandbox checkpoint <verb>   Take, list, show or forget a sandbox's images
   sandbox fork <id>           Clone a running sandbox, or a stored checkpoint
@@ -68,6 +70,8 @@ sandbox-scoped token may exec in its own sandbox and read it, and nothing else.`
 	cmd.AddCommand(newSandboxStatusCommand())
 	cmd.AddCommand(newSandboxLogsCommand())
 	cmd.AddCommand(newSandboxRemoveCommand())
+	cmd.AddCommand(newSandboxExposeCommand())
+	cmd.AddCommand(newSandboxUnexposeCommand())
 	cmd.AddCommand(newSandboxTokenCommand())
 	cmd.AddCommand(newSandboxCheckpointCommand())
 	cmd.AddCommand(newSandboxForkCommand())
@@ -385,6 +389,7 @@ freeing a live VM's namespace and disk would be the opposite of a removal.`,
 			fmt.Fprintf(out, "  tap removed:          %t\n", removal.Freed.TAPRemoved)
 			fmt.Fprintf(out, "  disk removed:         %t\n", removal.Freed.DiskRemoved)
 			fmt.Fprintf(out, "  agent token removed:  %t\n", removal.Freed.AgentCredentialRemoved)
+			fmt.Fprintf(out, "  previews closed:      %d\n", removal.Freed.PreviewsClosed)
 			fmt.Fprintf(out, "  instance record:      %t\n", removal.Freed.InstanceRecordRemoved)
 			fmt.Fprintf(out, "  api tokens revoked:   %d\n", removal.Freed.APITokensRevoked)
 			fmt.Fprintf(out, "  sandbox record:       %t\n", removal.Freed.RecordRemoved)
@@ -453,6 +458,152 @@ scope, which only an admin token (or the local control socket) holds.`,
 	cmd.Flags().StringVar(&name, "name", "", "Token name (default: \"sandbox <id>\")")
 	cmd.Flags().StringVar(&expiresAt, "expires-at", "", "RFC3339 expiry instant (default: never)")
 	return cmd
+}
+
+// newSandboxExposeCommand serves one guest port of a sandbox on this node's host, through
+// the preview proxy.
+func newSandboxExposeCommand() *cobra.Command {
+	var (
+		guestPort uint16
+		ttl       time.Duration
+	)
+
+	cmd := &cobra.Command{
+		Use:   "expose <id> --port <guest port>",
+		Short: "Serve one guest port on this node's host",
+		Long: `Serve one guest port of a sandbox on this node's host.
+
+The port is served at a loopback address derived from the sandbox, with the guest's own
+port, so it is reachable from the node and from nowhere else, and two sandboxes may
+expose the same guest port without meeting. A preview requires the token this command
+prints: a request without it is answered 401, and a request to a guest port that was
+never exposed reaches nothing at all.
+
+The token is printed once and never again — the node keeps only its digest — so keep the
+URL if you mean to use it later. An exposure dies with its sandbox, and it also expires:
+--ttl is how long it is served for (zero means the node's default, negative means never),
+and once it has elapsed the listener answers 410 until the port is un-exposed or the
+sandbox is removed.`,
+		Example: `  swarmcracker sandbox expose 5f3a1b2c9d --port 8080
+  swarmcracker sandbox expose 5f3a1b2c9d --port 8080 --ttl 30m
+  curl "$(swarmcracker sandbox expose 5f3a1b2c9d --port 8080 -o name)"`,
+		Args:         cobra.ExactArgs(1),
+		SilenceUsage: true,
+		PreRun:       func(cmd *cobra.Command, _ []string) { setupLogging(logLevel) },
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := newSandboxClientForCommand()
+			if err != nil {
+				return err
+			}
+			defer c.Close()
+
+			// A negative TTL asks for an exposure that never expires; the API carries
+			// that as -1, distinct from 0 ("the node's default").
+			ttlSeconds := int64(ttl / time.Second)
+			if ttl < 0 {
+				ttlSeconds = -1
+			}
+
+			exposure, err := c.ExposeSandboxPort(cmd.Context(), args[0], v1.SandboxPortRequest{
+				GuestPort:  guestPort,
+				TTLSeconds: ttlSeconds,
+			})
+			if err != nil {
+				return err
+			}
+
+			switch output.Format(outputFormat) {
+			case output.FormatJSON:
+				return printSandboxJSON(cmd.OutOrStdout(), exposure)
+			case output.FormatName:
+				// The URL, which is what a script wants and what a person opens.
+				fmt.Fprintln(cmd.OutOrStdout(), exposure.Authenticated)
+				return nil
+			case "", output.FormatTable:
+			default:
+				return output.NewErrorf(output.CodeUsage, "unsupported output format %q for sandbox expose", outputFormat)
+			}
+
+			out := cmd.OutOrStdout()
+			fmt.Fprintf(out, "%s\n", exposure.Authenticated)
+			fmt.Fprintf(out, "  sandbox:  %s\n", exposure.Sandbox)
+			fmt.Fprintf(out, "  host:     %s\n", exposure.Port.Address)
+			fmt.Fprintf(out, "  guest:    %d\n", exposure.Port.GuestPort)
+			fmt.Fprintf(out, "  token:    %s\n", exposure.Token)
+			if exposure.Port.ExpiresAt != "" {
+				fmt.Fprintf(out, "  expires:  %s\n", exposure.Port.ExpiresAt)
+			} else {
+				fmt.Fprintf(out, "  expires:  never (it dies with the sandbox)\n")
+			}
+			return nil
+		},
+	}
+
+	cmd.Flags().Uint16Var(&guestPort, "port", 0, "Guest port to serve on the host (required)")
+	cmd.Flags().DurationVar(&ttl, "ttl", 0, "How long the exposure is served (0 = the node's default, negative = never)")
+	_ = cmd.MarkFlagRequired("port")
+	return cmd
+}
+
+// newSandboxUnexposeCommand stops serving a guest port.
+func newSandboxUnexposeCommand() *cobra.Command {
+	var guestPort uint16
+
+	cmd := &cobra.Command{
+		Use:   "unexpose <id> --port <guest port>",
+		Short: "Stop serving one exposed guest port",
+		Long: `Stop serving a guest port that was exposed.
+
+The listener is closed and the sandbox's own policy stops accepting the port, so a
+request that used to reach the guest reaches nothing. The sandbox is unaffected, and the
+port can be exposed again — which mints a new token, because the old one is not
+recoverable.`,
+		Args:         cobra.ExactArgs(1),
+		SilenceUsage: true,
+		PreRun:       func(cmd *cobra.Command, _ []string) { setupLogging(logLevel) },
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := newSandboxClientForCommand()
+			if err != nil {
+				return err
+			}
+			defer c.Close()
+
+			sandbox, err := c.UnexposeSandboxPort(cmd.Context(), args[0], guestPort)
+			if err != nil {
+				return err
+			}
+
+			switch output.Format(outputFormat) {
+			case output.FormatJSON:
+				return printSandboxJSON(cmd.OutOrStdout(), v1.NewSandboxDocument(sandbox))
+			case "", output.FormatTable, output.FormatName:
+			default:
+				return output.NewErrorf(output.CodeUsage, "unsupported output format %q for sandbox unexpose", outputFormat)
+			}
+
+			out := cmd.OutOrStdout()
+			fmt.Fprintf(out, "%s\n", sandbox.ID)
+			fmt.Fprintf(out, "  guest port %d: no longer served\n", guestPort)
+			fmt.Fprintf(out, "  ports served:  %s\n", portsCell(sandbox.Ports))
+			return nil
+		},
+	}
+
+	cmd.Flags().Uint16Var(&guestPort, "port", 0, "Guest port to stop serving (required)")
+	_ = cmd.MarkFlagRequired("port")
+	return cmd
+}
+
+// portsCell renders a sandbox's exposed ports for a line of output.
+func portsCell(ports []v1.SandboxPort) string {
+	if len(ports) == 0 {
+		return "none"
+	}
+	parts := make([]string, 0, len(ports))
+	for _, p := range ports {
+		parts = append(parts, fmt.Sprintf("%d -> %s", p.GuestPort, p.Address))
+	}
+	return strings.Join(parts, ", ")
 }
 
 // printSandboxJSON writes one v1 document.

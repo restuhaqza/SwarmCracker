@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -260,6 +261,37 @@ func (c *SandboxClient) CreateSandboxToken(ctx context.Context, id string, req v
 		return v1.SandboxToken{}, err
 	}
 	return doc, nil
+}
+
+// ExposeSandboxPort serves one guest port of a sandbox on the node's host, through the
+// preview proxy, and returns the exposure with the token that opens it. The token is in
+// the response and nowhere else: the node keeps only its digest.
+func (c *SandboxClient) ExposeSandboxPort(ctx context.Context, id string, req v1.SandboxPortRequest) (v1.SandboxPortExposure, error) {
+	if err := validateSegments([]string{id}); err != nil {
+		return v1.SandboxPortExposure{}, err
+	}
+	body, err := json.Marshal(req)
+	if err != nil {
+		return v1.SandboxPortExposure{}, output.NewErrorf(output.CodeInternal, "encode sandbox port request: %v", err)
+	}
+	var doc v1.SandboxPortExposure
+	if err := c.do(ctx, http.MethodPost, []string{"v1", "sandboxes", id, "ports"}, body, &doc); err != nil {
+		return v1.SandboxPortExposure{}, err
+	}
+	return doc, nil
+}
+
+// UnexposeSandboxPort stops serving one exposed guest port and returns the sandbox as it
+// now stands.
+func (c *SandboxClient) UnexposeSandboxPort(ctx context.Context, id string, guestPort uint16) (v1.Sandbox, error) {
+	if err := validateSegments([]string{id}); err != nil {
+		return v1.Sandbox{}, err
+	}
+	var doc v1.SandboxDocument
+	if err := c.do(ctx, http.MethodDelete, []string{"v1", "sandboxes", id, "ports", strconv.Itoa(int(guestPort))}, nil, &doc); err != nil {
+		return v1.Sandbox{}, err
+	}
+	return doc.Sandbox, nil
 }
 
 // ExecSandbox runs one command in a sandbox and streams its output. It is the same

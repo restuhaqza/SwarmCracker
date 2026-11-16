@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -134,4 +135,51 @@ func TestReadyWindowIsAMeasurement(t *testing.T) {
 
 	rec.ReadyAt = created.Add(1500 * time.Millisecond)
 	assert.Equal(t, 1500*time.Millisecond, rec.ReadyAtDuration())
+}
+
+// TestExposedPortsAreValidated is the record's own check on an exposure: an exposed port is
+// a listener on the host and an opening in the sandbox's table, so a record that names one
+// must name it exactly. A record a reader could act on and the node could not honour is the
+// failure this refuses.
+func TestExposedPortsAreValidated(t *testing.T) {
+	created := time.Date(2026, 11, 12, 10, 0, 0, 0, time.UTC)
+	digest := strings.Repeat("ab", 32)
+	good := ExposedPort{GuestPort: 8080, Address: "127.9.9.9", TokenHash: digest, Created: created}
+
+	rec := testRecord("exposed")
+	rec.Ports = []ExposedPort{good}
+	require.NoError(t, rec.validate(), "a well-formed exposure is usable")
+
+	another := ExposedPort{GuestPort: 9090, Address: "127.9.9.9", TokenHash: digest, Created: created}
+
+	for _, tc := range []struct {
+		name  string
+		ports []ExposedPort
+		want  string
+	}{
+		{"port zero", []ExposedPort{{Address: "127.9.9.9", TokenHash: digest, Created: created}}, "exposes port 0"},
+		{"a public address", []ExposedPort{{GuestPort: 8080, Address: "10.63.0.2", TokenHash: digest, Created: created}}, "loopback IPv4 address"},
+		{"a name", []ExposedPort{{GuestPort: 8080, Address: "sandbox.example", TokenHash: digest, Created: created}}, "loopback IPv4 address"},
+		{"a digest that is not one", []ExposedPort{{GuestPort: 8080, Address: "127.9.9.9", TokenHash: "short", Created: created}}, "not a SHA-256 digest"},
+		{"no creation time", []ExposedPort{{GuestPort: 8080, Address: "127.9.9.9", TokenHash: digest}}, "no creation time"},
+		{"expiry before creation", []ExposedPort{{GuestPort: 8080, Address: "127.9.9.9", TokenHash: digest, Created: created, ExpiresAt: created.Add(-time.Minute)}}, "before it was exposed"},
+		{"the same port twice", []ExposedPort{good, good}, "twice"},
+		// A second, well-formed exposure beside a bad one is still refused: an exposure
+		// somewhere in the list is what matters, not only the first.
+		{"a bad one beside a good one", []ExposedPort{another, {GuestPort: 8080, Address: "127.0.0.1", TokenHash: digest}}, "no creation time"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := testRecord("exposed")
+			rec.Ports = tc.ports
+			err := rec.validate()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+
+	// An exposure with no digest is one this node cannot check, and the record may still
+	// carry it: the proxy is what refuses to serve it, not the store.
+	rec = testRecord("exposed")
+	rec.Ports = []ExposedPort{{GuestPort: 8080, Address: "127.9.9.9", Created: created}}
+	require.NoError(t, rec.validate())
 }

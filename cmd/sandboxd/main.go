@@ -71,9 +71,14 @@ const (
 	// guest limit — the guest's processes are inside the microVM, not in host
 	// cgroups — it is what keeps a wedged VMM from filling the node's pid space, and
 	// it is what gives a sandbox a cgroup for its teardown to free.
-	defaultVMMPidsMax  = 512
-	defaultMemoryMB    = 512
-	defaultReapEvery   = 30 * time.Second
+	defaultVMMPidsMax = 512
+	defaultMemoryMB   = 512
+	defaultReapEvery  = 30 * time.Second
+	// defaultPreviewTTL is how long an exposed guest port is served for when the caller
+	// asks for no deadline of its own. It is finite on purpose: a preview is an opening
+	// into a guest's service on the node's own host, and one that nobody remembers to
+	// close is a hole; a caller that wants a longer-lived one asks for it.
+	defaultPreviewTTL  = 30 * time.Minute
 	defaultReadyWindow = 90 * time.Second
 )
 
@@ -119,6 +124,8 @@ func appFlags() []cli.Flag {
 		&cli.DurationFlag{Name: "quota-retry-after", Value: sandbox.DefaultQuotaRetryAfter, Usage: "Retry-After hint a quota refusal carries"},
 		&cli.DurationFlag{Name: "ready-timeout", Value: defaultReadyWindow, Usage: "How long a sandbox's boot may take to reach the guest agent's hello"},
 		&cli.BoolFlag{Name: "no-checkpoints", Usage: "Serve no sandbox checkpoints: the checkpoint routes then answer 501 checkpoints_unavailable"},
+		&cli.DurationFlag{Name: "preview-ttl", Value: defaultPreviewTTL, Usage: "How long an exposed guest port is served for when the caller asks for no TTL (negative = never)"},
+		&cli.StringFlag{Name: "log-level", Value: "info", Usage: "Log level (debug, info, warn, error)"},
 	}
 }
 
@@ -152,6 +159,14 @@ func run(ctx *cli.Context) error {
 	manager, tokens, err := build(ctx, events)
 	if err != nil {
 		return err
+	}
+
+	// A preview listener is a socket in this process, so a restart has none: what the
+	// records still name is re-opened here, before anything is served. A failure is logged
+	// rather than fatal — the sandboxes themselves are unaffected, and a port that cannot
+	// be bound again is reported where it was asked for.
+	if err := manager.RestorePreviews(runCtx); err != nil {
+		log.Warn().Err(err).Msg("Some exposed sandbox ports are not being served")
 	}
 
 	server, err := apihttp.New(apihttp.Config{
@@ -188,6 +203,7 @@ func run(ctx *cli.Context) error {
 		Str("state_dir", ctx.String("state-dir")).
 		Str("golden_dir", ctx.String("golden-dir")).
 		Dur("reap_interval", ctx.Duration("reap-interval")).
+		Dur("preview_ttl", ctx.Duration("preview-ttl")).
 		Msg("sandboxd is serving the sandbox control plane")
 
 	// The listeners and the reaper run until the signal context ends. The reaper runs
@@ -247,8 +263,11 @@ func build(ctx *cli.Context, events *sandbox.Events) (*sandbox.Manager, *apihttp
 		MemoryMB:        ctx.Int("memory"),
 		DefaultTTL:      ctx.Duration("default-ttl"),
 		ReadyTimeout:    ctx.Duration("ready-timeout"),
-		TokenFile:       tokenFile(ctx),
-		Events:          events,
+		// A preview's default comes from this flag rather than from the caller, because
+		// the caller that exposes a port is the one least likely to remember it.
+		PreviewTTL: previewTTL(ctx.Duration("preview-ttl")),
+		TokenFile:  tokenFile(ctx),
+		Events:     events,
 
 		// The admission limits. pkg/sandbox fills in its own defaults for a zero
 		// field and refuses a negative one, so an operator's typo stops the daemon
@@ -297,6 +316,16 @@ func checkpointStores(ctx *cli.Context) (*sandbox.CheckpointStore, checkpoint.St
 		return nil, nil, nil, err
 	}
 	return records, blobs, snapshots, nil
+}
+
+// previewTTL is the daemon's default for an exposure: the flag, with a negative value
+// meaning "no deadline" — which is what a zero on the record means, so the two cannot be
+// confused by a reader.
+func previewTTL(configured time.Duration) time.Duration {
+	if configured < 0 {
+		return 0
+	}
+	return configured
 }
 
 // positiveFlag parses a numeric flag whose zero means "not set".

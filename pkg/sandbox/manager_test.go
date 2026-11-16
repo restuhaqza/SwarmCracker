@@ -73,6 +73,14 @@ type fakeNetwork struct {
 	detached  []string
 	attachErr error
 	detachErr error
+	// inbound is the guest ports the manager has opened in a sandbox's table, by
+	// namespace path. It is what proves the exposure half of a sandbox's policy is
+	// installed and taken away again.
+	inbound map[string][]uint16
+	// guest is the guest address the last SetInbound was given: the exposure rules are
+	// written in terms of it, and it comes from the record rather than from a lease.
+	guest      string
+	inboundErr error
 }
 
 func (f *fakeNetwork) Attach(_ context.Context, id string, _ []string) (netpolicy.Network, error) {
@@ -86,6 +94,22 @@ func (f *fakeNetwork) Attach(_ context.Context, id string, _ []string) (netpolic
 func (f *fakeNetwork) Detach(_ context.Context, id string) error {
 	f.detached = append(f.detached, id)
 	return f.detachErr
+}
+
+func (f *fakeNetwork) SetInbound(_ context.Context, nsPath, guest string, ports []uint16) error {
+	if f.inboundErr != nil {
+		return f.inboundErr
+	}
+	if f.inbound == nil {
+		f.inbound = make(map[string][]uint16)
+	}
+	f.guest = guest
+	if len(ports) == 0 {
+		delete(f.inbound, nsPath)
+		return nil
+	}
+	f.inbound[nsPath] = append([]uint16(nil), ports...)
+	return nil
 }
 
 // fakeInstances is the node's instance registry as a map. It keeps the registry's
@@ -992,6 +1016,8 @@ func (n *breakingNetwork) Attach(context.Context, string, []string) (netpolicy.N
 }
 
 func (n *breakingNetwork) Detach(context.Context, string) error { return nil }
+
+func (n *breakingNetwork) SetInbound(context.Context, string, string, []uint16) error { return nil }
 
 // TestCreateStopsWhenItCannotRecordWhatItAllocated pins the invariant the order exists for:
 // a resource that exists is recorded before the next one is allocated, so a create whose

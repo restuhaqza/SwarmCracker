@@ -67,6 +67,10 @@ type Freed struct {
 	TAP string
 	// Disk is the sandbox's own disk that was deleted.
 	Disk string
+	// Previews is how many preview listeners were closed. They are the host sockets
+	// that relayed an exposed guest port, and they are freed before the namespace they
+	// relay into, because a socket in a namespace outlives the namespace's name.
+	Previews int
 	// TokenFile is the host copy of the sandbox's agent token that was deleted.
 	TokenFile string
 	// APITokens is how many API tokens scoped to this sandbox were revoked.
@@ -91,7 +95,8 @@ type Freed struct {
 //     sandbox is ready" pointing at resources that are going away.
 //  3. Everything else is freed: the socket, the cgroup, the jail, the namespace
 //     (with the tap and the policy in it), the disk, the host's copy of the agent
-//     token, the node's instance record, and the API tokens scoped to this sandbox.
+//     token, the node's instance record, the API tokens scoped to this sandbox, and the
+//     preview listeners any exposed guest port was served on.
 //  4. The record is deleted. It is the last step because it is the only list of what
 //     the previous three steps had to free.
 //
@@ -152,6 +157,7 @@ func (m *Manager) Remove(ctx context.Context, id string) (Freed, error) {
 		Str("cgroup", freed.Cgroup).
 		Str("jail_root", freed.JailRoot).
 		Str("disk", freed.Disk).
+		Int("previews", freed.Previews).
 		Bool("instance_record", freed.InstanceRecord).
 		Int("api_tokens", freed.APITokens).
 		Msg("Sandbox is removed")
@@ -243,6 +249,13 @@ func (m *Manager) stopVM(ctx context.Context, rec *Record, freed *Freed) error {
 // disk, the host's copy of its token, and the node's instance record.
 func (m *Manager) freeResidual(ctx context.Context, rec *Record, freed *Freed) error {
 	var problems []error
+
+	// The preview listeners go first, and they are closed rather than merely forgotten:
+	// each one is a socket the node holds inside the sandbox's namespace as well as on
+	// the host, and a namespace with a socket still in it cannot be removed. Closing them
+	// here is what lets the detach below be the removal of the whole namespace, as its
+	// own contract requires.
+	freed.Previews = m.closePreviews(rec.ID)
 
 	// Detach is the inverse of the attach that built the sandbox: it closes this
 	// sandbox's egress endpoints before it removes the namespace, and removing the

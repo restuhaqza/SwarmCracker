@@ -136,6 +136,10 @@ func (n *forkNetwork) Detach(_ context.Context, id string) error {
 	return nil
 }
 
+// SetInbound is the exposure half of the policy, which a fork never reaches: the ports a
+// clone exposes are its own, opened by Expose on the clone.
+func (n *forkNetwork) SetInbound(context.Context, string, string, []uint16) error { return nil }
+
 // checkpointFixture is the fixture with the checkpoint halves wired: a record store, the
 // D11 chunk store and a snapshot manager that produces files instead of a VM.
 type checkpointFixture struct {

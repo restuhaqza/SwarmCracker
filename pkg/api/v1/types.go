@@ -41,6 +41,7 @@ const (
 	KindSandboxList    = "SandboxList"
 	KindSandboxRemoval = "SandboxRemoval"
 	KindSandboxToken   = "SandboxToken"
+	KindSandboxPort    = "SandboxPortExposure"
 )
 
 // Warning is a non-fatal notice carried in a document's warnings array. It is

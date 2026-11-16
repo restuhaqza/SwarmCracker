@@ -25,6 +25,7 @@ import (
 	"io"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -90,10 +91,19 @@ type Sandboxes interface {
 	// saying why there is none: a sandbox this node does not have, one that has
 	// written none yet, or a node that records no console at all.
 	ServerLogPath(id string) (string, error)
+	// Expose serves one guest port of a ready sandbox on this node's host, and
+	// returns the exposure with the token that opens it (pkg/sandbox/preview.go).
+	Expose(ctx context.Context, id string, guestPort uint16, ttl time.Duration) (sandbox.Exposure, error)
+	// Unexpose stops serving one exposed guest port.
+	Unexpose(ctx context.Context, id string, guestPort uint16) error
 }
 
 // sandboxAuditAction is the audit action recorded for a sandbox's exec.
 const sandboxAuditAction = "sandbox.exec"
+
+// sandboxExposeAuditAction is the audit action recorded for exposing and un-exposing a
+// guest port: both are one change to what the node serves, on one sandbox.
+const sandboxExposeAuditAction = "sandbox.expose"
 
 // sandboxCapability is the advertised capability name of the sandbox control plane:
 // the version document lists it exactly when this node serves it, so a client can
@@ -331,6 +341,93 @@ func (s *Server) createSandboxToken(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, r, http.StatusCreated, v1.NewSandboxToken(tok.ID, tok.Name, id, secret, tok.ExpiresAt, tok.Scopes))
 }
 
+// exposeSandboxPort serves POST /v1/sandboxes/{id}/ports: one guest port of this sandbox,
+// served on the node's host through the preview proxy.
+//
+// The token the response carries is the only time it exists outside the proxy's memory:
+// the node keeps a digest of it, so the exposure's URL has to be kept by the caller that
+// asked for it.
+func (s *Server) exposeSandboxPort(w http.ResponseWriter, r *http.Request) {
+	if !s.sandboxesAvailable(w, r) {
+		return
+	}
+
+	id := r.PathValue("id")
+	identity, _ := IdentityFrom(r.Context())
+	if err := identity.AuthorizeSandbox(id); err != nil {
+		s.recordSandboxAudit(r, sandboxExposeAuditAction, id, "error")
+		s.writeError(w, r, err)
+		return
+	}
+
+	var req v1.SandboxPortRequest
+	if status, err := readJSONWrite(w, r, &req); err != nil {
+		s.writeErrorStatus(w, r, status, sandboxAPIError(err))
+		return
+	}
+	// 0 is "the node's default", -1 is "never" and anything else negative is a mistake,
+	// exactly as an idle TTL reads.
+	if req.TTLSeconds < -1 {
+		s.writeError(w, r, output.NewError(output.CodeInvalid,
+			"ttlSeconds must be zero (the node's default), -1 (never) or positive").
+			WithDetails(map[string]any{"reason": "invalid_ttl"}))
+		return
+	}
+	if req.GuestPort == 0 {
+		s.writeError(w, r, output.NewError(output.CodeInvalid, "guestPort is required").
+			WithDetails(map[string]any{"reason": "invalid_port"}))
+		return
+	}
+
+	exposure, err := s.cfg.Sandboxes.Expose(r.Context(), id, req.GuestPort, time.Duration(req.TTLSeconds)*time.Second)
+	if err != nil {
+		s.recordSandboxAudit(r, sandboxExposeAuditAction, id, "error")
+		s.writeError(w, r, sandboxAPIError(err))
+		return
+	}
+	s.recordSandboxAudit(r, sandboxExposeAuditAction, id, "ok")
+
+	s.writeJSON(w, r, http.StatusCreated, v1.NewSandboxPortExposure(id, sandboxPortDocument(exposure.ExposedPort), exposure.Token, exposure.URL))
+}
+
+// unexposeSandboxPort serves DELETE /v1/sandboxes/{id}/ports/{port}: the port stops being
+// served, and the sandbox's own table stops accepting it.
+func (s *Server) unexposeSandboxPort(w http.ResponseWriter, r *http.Request) {
+	if !s.sandboxesAvailable(w, r) {
+		return
+	}
+
+	id := r.PathValue("id")
+	identity, _ := IdentityFrom(r.Context())
+	if err := identity.AuthorizeSandbox(id); err != nil {
+		s.recordSandboxAudit(r, sandboxExposeAuditAction, id, "error")
+		s.writeError(w, r, err)
+		return
+	}
+
+	port, err := strconv.ParseUint(r.PathValue("port"), 10, 16)
+	if err != nil || port == 0 {
+		s.recordSandboxAudit(r, sandboxExposeAuditAction, id, "error")
+		s.writeError(w, r, output.NewErrorf(output.CodeInvalid, "port %q is not a port", r.PathValue("port")).
+			WithDetails(map[string]any{"reason": "invalid_port"}))
+		return
+	}
+
+	if err := s.cfg.Sandboxes.Unexpose(r.Context(), id, uint16(port)); err != nil {
+		s.recordSandboxAudit(r, sandboxExposeAuditAction, id, "error")
+		s.writeError(w, r, sandboxAPIError(err))
+		return
+	}
+	s.recordSandboxAudit(r, sandboxExposeAuditAction, id, "ok")
+
+	rec, err := s.cfg.Sandboxes.Get(id)
+	if err != nil {
+		s.writeError(w, r, sandboxAPIError(err))
+		return
+	}
+	s.writeJSON(w, r, http.StatusOK, v1.NewSandboxDocument(sandboxDocument(rec)))
+}
+
 // sandboxesAvailable answers 501 when this node serves no sandbox control plane, and
 // reports whether the caller may continue. A route that exists but has no manager
 // behind it is a capability, not a bug, and saying so is what the version document's
@@ -380,8 +477,33 @@ func sandboxDocument(rec sandbox.Record) v1.Sandbox {
 		MAC:            rec.MAC,
 		Egress:         rec.Egress,
 		DiskCopy:       rec.DiskCopy,
+		Ports:          sandboxPortDocuments(rec.Ports),
 		AgentVersion:   rec.AgentVersion,
 		BootID:         rec.BootID,
+	}
+}
+
+// sandboxPortDocuments maps a record's exposures to the read model. The address, the port
+// and the deadline cross; the token's digest does not, because it is a credential and the
+// document is not.
+func sandboxPortDocuments(ports []sandbox.ExposedPort) []v1.SandboxPort {
+	if len(ports) == 0 {
+		return nil
+	}
+	out := make([]v1.SandboxPort, 0, len(ports))
+	for _, p := range ports {
+		out = append(out, sandboxPortDocument(p))
+	}
+	return out
+}
+
+// sandboxPortDocument is one exposed port as the API reports it.
+func sandboxPortDocument(p sandbox.ExposedPort) v1.SandboxPort {
+	return v1.SandboxPort{
+		GuestPort: p.GuestPort,
+		Address:   p.Host(),
+		URL:       p.URL(),
+		ExpiresAt: formatInstant(p.ExpiresAt),
 	}
 }
 
@@ -395,6 +517,7 @@ func sandboxFreedDocument(freed sandbox.Freed) v1.SandboxFreed {
 		NetNSRemoved:           freed.NetNS != "",
 		TAPRemoved:             freed.TAP != "",
 		DiskRemoved:            freed.Disk != "",
+		PreviewsClosed:         freed.Previews,
 		AgentCredentialRemoved: freed.TokenFile != "",
 		InstanceRecordRemoved:  freed.InstanceRecord,
 		RecordRemoved:          freed.Record,
@@ -470,6 +593,10 @@ func sandboxAPIError(err error) error {
 		return output.NewError(output.CodeConflict, err.Error())
 	case errors.Is(err, sandbox.ErrInvalid):
 		return output.NewError(output.CodeInvalid, err.Error())
+	case errors.Is(err, sandbox.ErrExposed):
+		return output.NewError(output.CodeConflict, err.Error())
+	case errors.Is(err, sandbox.ErrNotExposed):
+		return output.NewError(output.CodeNotFound, err.Error())
 	}
 
 	// A template's refusal carries its own stable code (pkg/golden). Reading it from

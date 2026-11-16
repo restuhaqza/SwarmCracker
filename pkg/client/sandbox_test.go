@@ -52,6 +52,13 @@ func (h *sandboxHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, `{"type":"stdout","data":"b3V0Cg=="}`+"\n")
 		_, _ = io.WriteString(w, `{"type":"stderr","data":"ZXJyCg=="}`+"\n")
 		_, _ = io.WriteString(w, `{"type":"exit","exitCode":7}`+"\n")
+	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/ports"):
+		w.Header().Set("Content-Type", sandboxTestMediaType)
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, `{"schemaVersion":1,"kind":"SandboxPortExposure","sandbox":"a","port":{"guestPort":8080,"address":"127.9.9.9:8080","url":"http://127.9.9.9:8080/","expiresAt":"2026-11-16T11:00:00Z"},"token":"preview-secret","authenticatedUrl":"http://127.9.9.9:8080/?token=preview-secret"}`)
+	case r.Method == http.MethodDelete && strings.Contains(r.URL.Path, "/ports/"):
+		w.Header().Set("Content-Type", sandboxTestMediaType)
+		_, _ = io.WriteString(w, `{"schemaVersion":1,"kind":"Sandbox","id":"a","state":"ready"}`)
 	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/tokens"):
 		w.Header().Set("Content-Type", sandboxTestMediaType)
 		_, _ = io.WriteString(w, `{"schemaVersion":1,"kind":"SandboxToken","id":"tok_1","name":"n","sandbox":"a","scopes":["sandboxes:read"],"token":"sc_x"}`)
@@ -159,6 +166,46 @@ func TestSandboxClientWrites(t *testing.T) {
 	// The token route is a POST with a body, so the client must send the media type.
 	last := recorder.requests[len(recorder.requests)-1]
 	assert.Equal(t, sandboxTestMediaType, last.Header.Get("Content-Type"))
+}
+
+// TestSandboxClientExposesAndUnexposesAPort pins the exposure routes: the body that asks
+// for a port and the deadline, the token that comes back once, and the DELETE that names
+// the port in the path — because one exposure per guest port is its identity.
+func TestSandboxClientExposesAndUnexposesAPort(t *testing.T) {
+	client, recorder := newUnixSandboxClient(t, &sandboxHandler{})
+	ctx := context.Background()
+
+	exposure, err := client.ExposeSandboxPort(ctx, "a", v1.SandboxPortRequest{GuestPort: 8080, TTLSeconds: 600})
+	require.NoError(t, err)
+	assert.Equal(t, v1.KindSandboxPort, exposure.Kind)
+	assert.Equal(t, uint16(8080), exposure.Port.GuestPort)
+	assert.Equal(t, "127.9.9.9:8080", exposure.Port.Address)
+	assert.Equal(t, "preview-secret", exposure.Token)
+	assert.Contains(t, exposure.Authenticated, "?token=preview-secret")
+
+	posted := recorder.requests[len(recorder.requests)-1]
+	assert.Equal(t, "POST", posted.Method)
+	assert.Equal(t, "/v1/sandboxes/a/ports", posted.URL.Path)
+	assert.Equal(t, sandboxTestMediaType, posted.Header.Get("Content-Type"))
+	var sent v1.SandboxPortRequest
+	require.NoError(t, json.Unmarshal([]byte(recorder.bodies[len(recorder.bodies)-1]), &sent))
+	assert.Equal(t, uint16(8080), sent.GuestPort)
+	assert.Equal(t, int64(600), sent.TTLSeconds)
+
+	sandbox, err := client.UnexposeSandboxPort(ctx, "a", 8080)
+	require.NoError(t, err)
+	assert.Equal(t, "a", sandbox.ID)
+	removed := recorder.requests[len(recorder.requests)-1]
+	assert.Equal(t, "DELETE", removed.Method)
+	assert.Equal(t, "/v1/sandboxes/a/ports/8080", removed.URL.Path)
+
+	// An id that cannot be a path segment is refused before anything is sent.
+	before := len(recorder.requests)
+	_, err = client.ExposeSandboxPort(ctx, "", v1.SandboxPortRequest{GuestPort: 8080})
+	require.Error(t, err)
+	_, err = client.UnexposeSandboxPort(ctx, "", 8080)
+	require.Error(t, err)
+	assert.Len(t, recorder.requests, before, "a bad reference never reaches the daemon")
 }
 
 // TestSandboxClientStreamsExec pins the exec path: the frames become the caller's

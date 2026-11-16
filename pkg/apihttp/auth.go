@@ -81,6 +81,11 @@ const (
 	// carries read and exec for its sandbox and nothing else, and a holder of one
 	// must not be able to mint another.
 	ScopeSandboxesToken Scope = "sandboxes:token"
+	// ScopeSandboxesPorts exposes a guest port on the node's host (the preview proxy).
+	// It is a runner permission, like exec: both reach into one sandbox's guest, and
+	// both are narrowed by the sandbox selector, so holding it for one sandbox is not
+	// holding it for another.
+	ScopeSandboxesPorts Scope = "sandboxes:ports"
 )
 
 // readerScopes is the base of every role. Order is the documentation order: it
@@ -100,7 +105,7 @@ var readerScopes = []Scope{
 
 var runnerScopes = concatScopes(readerScopes,
 	ScopeTasksExec, ScopeTasksFiles, ScopeTasksSnapshots,
-	ScopeSandboxesExec, ScopeSandboxesFiles)
+	ScopeSandboxesExec, ScopeSandboxesFiles, ScopeSandboxesPorts)
 
 var operatorScopes = concatScopes(runnerScopes,
 	ScopeServicesWrite, ScopeNetworksWrite, ScopeConfigsWrite,

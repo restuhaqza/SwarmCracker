@@ -49,11 +49,13 @@
 //
 // # Scope
 //
-// This is the node-side network policy of M3, through the egress allowlist: the
-// namespace, the fixed tap0, the per-sandbox /30, the default-deny ruleset, the
-// allowlist, the egress proxy and the DNS view are here; the preview proxy and the
-// sandbox control plane (sandboxd, M5) are not. Attach is what a caller calls before
-// it launches a VM, and Detach is what it calls after it has stopped one.
+// This is the node-side network policy of M3: the namespace, the fixed tap0, the
+// per-sandbox /30, the default-deny ruleset, the allowlist, the egress proxy and the
+// DNS view are here, and so is the other direction — the accepts an exposed guest port
+// needs and the dial the preview proxy makes into the guest (preview.go). The sandbox
+// control plane itself (sandboxd, M5) is not: it calls every one of these. Attach is
+// what a caller calls before it launches a VM, and Detach is what it calls after it has
+// stopped one.
 package netpolicy
 
 import (
@@ -63,7 +65,9 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
 
 	"github.com/restuhaqza/swarmcracker/pkg/agent"
@@ -111,6 +115,13 @@ const (
 
 	// policyTable is the name of the nftables table inside every sandbox namespace.
 	policyTable = "sandbox"
+
+	// previewInChain and previewOutChain are the chains an exposed guest port is served
+	// through: the two directions of the node's own connections into a guest, kept apart
+	// from the egress chains so that exposing a port never rewrites what a sandbox may
+	// reach (policyScript, SetInbound).
+	previewInChain  = "preview_in"
+	previewOutChain = "preview_out"
 )
 
 // Exec runs one host command and returns its combined output. It is a function
@@ -425,6 +436,85 @@ func (m *Manager) Attach(ctx context.Context, id string, allow []string) (Networ
 	}
 	n.Egress = plan
 	return n, nil
+}
+
+// SetInbound makes a sandbox's own table accept the node's connections to the listed
+// guest ports — and nothing else — by emptying and refilling the two preview chains
+// (exposureScript). An empty list takes every exposure away again, which is what
+// un-exposing the last port and removing a sandbox both need.
+//
+// It is a function of the namespace and the guest's address, both of which the caller
+// reads from the sandbox's record, and of nothing this process remembers: a daemon that
+// restarted still serves the sandboxes that are running, and exposing a port of one must
+// work there exactly as it does on a node that just created it. The sandbox must be
+// attached — its namespace has to exist and carry the table's chains — and a sandbox that
+// is not is a refusal, because a preview with no policy under it is an opening nothing
+// describes.
+func (m *Manager) SetInbound(ctx context.Context, nsPath, guest string, ports []uint16) error {
+	address, err := netip.ParseAddr(guest)
+	switch {
+	case err != nil:
+		return fmt.Errorf("netpolicy: guest address %q is not an address: %w", guest, err)
+	case !address.Is4():
+		return fmt.Errorf("netpolicy: guest address %q is not an IPv4 address: a sandbox's /30 is an IPv4 link", guest)
+	}
+	name := filepath.Base(nsPath)
+	if name == "" || name == "." || name == "/" {
+		return fmt.Errorf("netpolicy: %q cannot name a network namespace", nsPath)
+	}
+
+	file, err := os.CreateTemp("", "netpolicy-preview-*.nft")
+	if err != nil {
+		return fmt.Errorf("netpolicy: stage the exposed ports for %s: %w", name, err)
+	}
+	path := file.Name()
+	defer func() { _ = os.Remove(path) }()
+
+	if _, err := file.WriteString(exposureScript(address, ports)); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("netpolicy: stage the exposed ports for %s: %w", name, err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("netpolicy: stage the exposed ports for %s: %w", name, err)
+	}
+
+	if _, err := m.exec(ctx, m.ip, "netns", "exec", name, m.nft, "-f", path); err != nil {
+		return fmt.Errorf("netpolicy: set the exposed ports of %s: %w", name, err)
+	}
+	return nil
+}
+
+// DialInNamespace connects to address from inside the network namespace at nsPath.
+//
+// It is how the node reaches a guest: a sandbox's address is reachable from inside its
+// own namespace only, because that namespace is the only place with a route to the TAP
+// the guest is on. The socket is created on a thread that has entered the namespace, so
+// it belongs to the sandbox; the connection it makes is accepted by the sandbox's own
+// table (SetInbound), which is the same table that denies everything a sandbox may not
+// do.
+//
+// address must be a literal "ip:port": the guest's address is allocated by this package
+// and a name here would be a lookup inside a namespace whose resolver is the sandbox's
+// own view, which is not what the caller asked for.
+func DialInNamespace(ctx context.Context, nsPath, address string) (net.Conn, error) {
+	if _, err := netip.ParseAddrPort(address); err != nil {
+		return nil, fmt.Errorf("netpolicy: dial %q in %s: want a literal ip:port: %w", address, nsPath, err)
+	}
+
+	var conn net.Conn
+	err := inNamespace(nsPath, func() error {
+		dialer := net.Dialer{Timeout: dialTimeout}
+		created, err := dialer.DialContext(ctx, "tcp4", address)
+		if err != nil {
+			return err
+		}
+		conn = created
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("netpolicy: dial %s inside %s: %w", address, nsPath, err)
+	}
+	return conn, nil
 }
 
 // openEgress gives the namespace the addresses it answers for and starts the
