@@ -55,9 +55,9 @@ func (m *Manager) Exec(ctx context.Context, id string, command []string, opts Ex
 		return agent.ExecResult{}, fmt.Errorf("%w: no command to run", ErrInvalid)
 	}
 
-	client, err := agent.Dial(ctx, rec.VsockPath, agent.DefaultPort)
+	client, err := m.guest(ctx, rec)
 	if err != nil {
-		return agent.ExecResult{}, fmt.Errorf("sandbox %s: reach its guest agent: %w", rec.ID, err)
+		return agent.ExecResult{}, err
 	}
 	defer func() { _ = client.Close() }()
 

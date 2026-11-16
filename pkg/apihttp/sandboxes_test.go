@@ -49,6 +49,27 @@ type fakeSandboxes struct {
 	forkReq           sandbox.ForkRequest
 	forkErr           error
 	forkFromID        string
+
+	// files is the guest tree the file routes reach, by guest path: what a describe
+	// reports. fileContents is the bytes behind each path, and fileCalls records the
+	// operations the routes asked for, in order, so a test can pin which one a copy
+	// used.
+	files        map[string]sandbox.File
+	fileContents map[string]string
+	fileCalls    []string
+	// written is what a write put in the guest, by path: the bytes the guest would
+	// hold afterwards.
+	written map[string]string
+	// putMode is the mode a write asked for, and putBytes how many bytes it streamed.
+	putMode  uint32
+	putBytes int64
+
+	describeErr, sendErr, putErr, extractErr, statusErr error
+	// status is what a status read answers with, and logPath/logErr the console's:
+	// a path, or the failure that says why there is none.
+	status  sandbox.Status
+	logPath string
+	logErr  error
 }
 
 func (f *fakeSandboxes) Checkpoint(_ context.Context, id, name string) (sandbox.CheckpointRecord, error) {
@@ -303,6 +324,16 @@ func TestSandboxScopedTokenCannotReachAnotherSandbox(t *testing.T) {
 	doc = decodeErrorBody(t, rec)
 	assert.Equal(t, "scope_missing", doc.Error.Details["reason"])
 	assert.Equal(t, string(ScopeSandboxesToken), doc.Error.Details["requiredScope"])
+
+	// It cannot copy files either — not even in its own sandbox. The token is minted
+	// without sandboxes:files on purpose: copying a file in is the same power as exec'ing,
+	// so withholding it is a decision that needs a caller rather than a symmetry argument,
+	// and a decision that is not pinned by a test is one that a later edit quietly reverses.
+	rec = sandboxRequest(t, srv, minted.Secret, http.MethodGet, "/v1/sandboxes/a/files?path=workspace/main.go", "")
+	require.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
+	doc = decodeErrorBody(t, rec)
+	assert.Equal(t, "scope_missing", doc.Error.Details["reason"])
+	assert.Equal(t, string(ScopeSandboxesFiles), doc.Error.Details["requiredScope"])
 
 	// It cannot remove one either: rm is a write, and it holds neither the scope nor
 	// (for B) the selector.

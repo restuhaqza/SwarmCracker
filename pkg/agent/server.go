@@ -213,6 +213,8 @@ func (s *server) serve(req *Request) error {
 		return s.handleList(req)
 	case CapTar:
 		return s.handleTar(req)
+	case CapUntar:
+		return s.handleUntar(req)
 	default:
 		return s.serveMachine(req)
 	}
@@ -541,6 +543,79 @@ func (s *server) handleTar(req *Request) error {
 		return s.writeFileFailure(err)
 	}
 	return s.write(Message{Type: "file", Tar: &summary})
+}
+
+// handleUntar writes the archive the request streams into the workspace, and answers with
+// what it wrote in the same terminal frame `tar` uses.
+//
+// req.Path is the directory the archive must stay inside, as a path relative to the file
+// root: every entry is compared against it before anything is created, so a caller that
+// asked to write one tree cannot write another. The names in the archive are themselves
+// relative to the root — which is what `tar` produces — so a GET of a tree and a PUT of
+// the archive it returned describe the same files.
+func (s *server) handleUntar(req *Request) error {
+	if req.Path == "" {
+		return s.writeFailure(CodeInvalidRequest, "untar: empty path")
+	}
+	reader := &frameReader{s: s}
+	summary, err := extractTree(s.reqCtx, req.Path, reader)
+	// The request's stream is consumed to its end whatever the extraction decided. The
+	// caller wrote a whole archive, and a reply sent while the connection still holds its
+	// tail would leave the next request reading bytes of this one — the same reason
+	// `handlePut` reads to the last frame before it answers.
+	if drainErr := reader.drain(); drainErr != nil && err == nil {
+		err = drainErr
+	}
+	if err != nil {
+		return s.writeFileFailure(err)
+	}
+	return s.write(Message{Type: "file", Tar: &summary})
+}
+
+// frameReader is one request's archive as the connection carries it: file frames in
+// order, until the empty frame that ends the stream. It is a reader rather than a buffer
+// because archive/tar wants one, and because the point of the operation is that neither
+// side ever holds the tree.
+type frameReader struct {
+	s    *server
+	left []byte
+	done bool
+}
+
+// drain reads whatever the archive still has, discarding it, so the connection is left at
+// a request boundary. An archive this operation refused early is still arriving, and a
+// peer that is blocked writing it cannot be told anything.
+func (f *frameReader) drain() error {
+	_, err := io.Copy(io.Discard, f)
+	return err
+}
+
+func (f *frameReader) Read(p []byte) (int, error) {
+	for len(f.left) == 0 {
+		if f.done {
+			return 0, io.EOF
+		}
+		if err := f.s.reqCtx.Err(); err != nil {
+			return 0, fail(CodeDeadlineExceeded, "untar: deadline exceeded before the archive finished arriving")
+		}
+		var msg Message
+		// An archive is a stream, so it is bounded by the stream limit rather than the
+		// smaller control-frame cap.
+		if _, err := ReadStreamFrame(f.s.rw, &msg); err != nil {
+			return 0, fmt.Errorf("untar: read data frame: %w", err)
+		}
+		if msg.Type != "file" {
+			return 0, fmt.Errorf("untar: unexpected frame type %q", msg.Type)
+		}
+		if len(msg.Data) == 0 {
+			f.done = true
+			return 0, io.EOF
+		}
+		f.left = msg.Data
+	}
+	n := copy(p, f.left)
+	f.left = f.left[n:]
+	return n, nil
 }
 
 // handleActivity replies with what this sandbox is doing right now

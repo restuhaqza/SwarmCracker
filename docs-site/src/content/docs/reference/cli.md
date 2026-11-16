@@ -805,6 +805,9 @@ directly, because a sandbox outlives the command that asked for it.
 | `ls` (alias `list`) | List the node's sandboxes |
 | `inspect <id>` | Show one sandbox as a v1 `Sandbox` document |
 | `exec <id> -- <cmd...>` | Run a command in a ready sandbox, streaming stdout and stderr |
+| `cp <id>:<path> <local>` | Copy a file or a directory in or out of a sandbox |
+| `status <id>` | Show a sandbox and what its guest says about itself (`--format json`) |
+| `logs <id>` | Print a sandbox's serial console |
 | `rm <id>` (alias `remove`) | Remove a sandbox and everything it holds |
 | `token <id>` | Mint an API token scoped to one sandbox (needs `sandboxes:token`) |
 
@@ -812,6 +815,14 @@ directly, because a sandbox outlives the command that asked for it.
 default reaches nothing), `--ttl <duration>` (idle TTL; `0` uses the node's default,
 negative means never), `--vcpus`, `--memory`.
 **`sandbox exec` flags:** `-e`/`--env` (repeatable `K=V`), `-w`/`--workdir`.
+**`sandbox cp` direction:** exactly one argument names a sandbox, as `<id>:<guest-path>`
+(relative to the guest's workspace root; a leading `/` is that root). The guest path names
+what is created or read, so a copy out and a copy in of the same path are symmetric. A tree
+is streamed as a tar archive in both directions; writing one needs a template whose agent
+advertises `untar`, and a template without it is refused with `details.capability` =
+`untar` while a single file still arrives. `sandbox status` reads the guest's own `info`
+and `net` reports rather than parsing a command's output, so a template needs no shell for
+it.
 **`sandbox token` flags:** `--name`, `--expires-at`.
 **Persistent flag:** `--sandbox-socket <path>` (default `$SWARM_SANDBOX_SOCKET`, else
 `/var/run/swarmcracker/sandboxd.sock`).

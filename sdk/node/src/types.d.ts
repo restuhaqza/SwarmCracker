@@ -511,6 +511,20 @@ export interface SandboxDocument {
   kind: "Sandbox";
 }
 
+/** What a write into a sandbox's workspace did, as the guest reports it: the bytes it wrote and, for a tree, how many entries it wrote and which entries it refused. */
+export interface SandboxFileWrite {
+  schemaVersion: 1;
+  kind: "SandboxFileWrite";
+  /** The guest path the bytes were written to, exactly as the caller named it. */
+  path: string;
+  /** The file bytes the guest wrote: a copied file's size, or the sum of the files in an archive. It is what landed, not what was sent. */
+  bytes: number;
+  /** How many entries an archive wrote. Absent for a single file. */
+  entries?: number;
+  /** The archive entries the guest did not write, and why. */
+  warnings?: string[];
+}
+
 export interface SandboxFork {
   /** How many clones to create. Absent means one. */
   count?: number;
@@ -537,6 +551,43 @@ export interface SandboxFreed {
   apiTokensRevoked?: number;
 }
 
+/** What the guest knows about itself, read from its own /proc and /etc/os-release rather than inferred from the template. */
+export interface SandboxGuestInfo {
+  hostname?: string;
+  /** The guest's machine id. The post-restore hook rewrites it, so two clones of one checkpoint differ here. */
+  machineId?: string;
+  /** The kernel the guest is running. */
+  kernelRelease?: string;
+  kernelVersion?: string;
+  /** The guest's architecture, as its kernel names it. */
+  machine?: string;
+  /** From the guest's /etc/os-release; empty in a template without one. */
+  osName?: string;
+  osId?: string;
+  cpus?: number;
+  memoryTotalBytes?: number;
+  /** The guest's own uptime. A restore rewrites it, so it measures the running guest and not the checkpoint it came from. */
+  uptimeSeconds?: number;
+  /** The agent protocol version the guest speaks. */
+  protocol?: string;
+  agentVersion?: string;
+  /** The exact agent build, normally the commit. */
+  buildId?: string;
+  /** This boot's identity; it changes on reboot and on restore. */
+  bootId?: string;
+  /** The tools the template's own directories hold, sorted by name. It is how a caller tells whether a template ships a shell or tar. */
+  tools?: string[];
+}
+
+/** The guest's own view of its network. */
+export interface SandboxGuestNet {
+  interfaces: SandboxNetInterface[];
+  routes: SandboxNetRoute[];
+  /** The guest's /etc/resolv.conf nameservers. An empty list means the guest has none configured, not that the read failed. */
+  resolvers: string[];
+  search?: string[];
+}
+
 export interface SandboxList {
   schemaVersion: 1;
   kind: "SandboxList";
@@ -547,11 +598,101 @@ export interface SandboxList {
   checkpoint?: string;
 }
 
+export interface SandboxNetInterface {
+  name: string;
+  /** The kernel's interface index, which a route's device refers to. */
+  index: number;
+  mac?: string;
+  mtu?: number;
+  up: boolean;
+  /** Set on lo: a sandbox's loopback is its own. */
+  loopback?: boolean;
+  /** The interface's addresses in CIDR form, sorted. */
+  addresses?: string[];
+}
+
+export interface SandboxNetRoute {
+  family: "ipv4" | "ipv6";
+  destination: string;
+  /** The next hop; absent for an on-link route. */
+  gateway?: string;
+  device?: string;
+  metric?: number;
+}
+
 export interface SandboxRemoval {
   schemaVersion: 1;
   kind: "SandboxRemoval";
   sandbox: string;
   freed: SandboxFreed;
+}
+
+export interface SandboxStatus {
+  id: string;
+  /** created is a sandbox being built (or a create that died), ready is one whose guest agent answered its hello — the only state in which it can run a command — failed is one the node could not make usable or lost (reason says which), and stopped is one the node has ended. A removed sandbox is not listed: its record is deleted once everything it held is freed. */
+  state: "created" | "ready" | "failed" | "stopped";
+  /** The resolved template reference, name@version. */
+  template?: string;
+  owner?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  /** When the guest agent answered. Absent until it does. */
+  readyAt?: string;
+  /** When the node last saw the sandbox used; the idle TTL is measured from it. */
+  lastActiveAt?: string;
+  /** How long the sandbox may sit unused before the reaper takes it back. 0 means never. */
+  idleTtlSeconds?: number;
+  /** Why a sandbox is failed. Absent in every other state. */
+  reason?: string;
+  guestIp?: string;
+  mac?: string;
+  /** The allowlist the sandbox was created with, as requested; empty is egress none. */
+  egress?: string[];
+  /** How the sandbox's own disk was materialized from the template. */
+  diskCopy?: "reflink" | "sparse" | "full";
+  agentVersion?: string;
+  bootId?: string;
+  schemaVersion: 1;
+  kind: "SandboxStatus";
+  info: SandboxStatusInfo;
+  net: SandboxStatusNet;
+}
+
+/** What the guest reported about itself. */
+export interface SandboxStatusInfo {
+  hostname?: string;
+  /** The guest's machine id. The post-restore hook rewrites it, so two clones of one checkpoint differ here. */
+  machineId?: string;
+  /** The kernel the guest is running. */
+  kernelRelease?: string;
+  kernelVersion?: string;
+  /** The guest's architecture, as its kernel names it. */
+  machine?: string;
+  /** From the guest's /etc/os-release; empty in a template without one. */
+  osName?: string;
+  osId?: string;
+  cpus?: number;
+  memoryTotalBytes?: number;
+  /** The guest's own uptime. A restore rewrites it, so it measures the running guest and not the checkpoint it came from. */
+  uptimeSeconds?: number;
+  /** The agent protocol version the guest speaks. */
+  protocol?: string;
+  agentVersion?: string;
+  /** The exact agent build, normally the commit. */
+  buildId?: string;
+  /** This boot's identity; it changes on reboot and on restore. */
+  bootId?: string;
+  /** The tools the template's own directories hold, sorted by name. It is how a caller tells whether a template ships a shell or tar. */
+  tools?: string[];
+}
+
+/** How the guest sees its own network. */
+export interface SandboxStatusNet {
+  interfaces: SandboxNetInterface[];
+  routes: SandboxNetRoute[];
+  /** The guest's /etc/resolv.conf nameservers. An empty list means the guest has none configured, not that the read failed. */
+  resolvers: string[];
+  search?: string[];
 }
 
 export interface SandboxToken {

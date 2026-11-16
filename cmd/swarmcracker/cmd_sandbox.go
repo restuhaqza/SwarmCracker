@@ -43,6 +43,9 @@ first; without it every command here reports the socket it could not reach.
   sandbox ls                  List the node's sandboxes
   sandbox inspect <id>        Show one sandbox
   sandbox exec <id> -- <cmd>  Run a command inside a ready sandbox
+  sandbox cp <id>:<path> <p>  Copy a file or a tree in or out of a sandbox
+  sandbox status <id>         Show a sandbox and what its guest says about itself
+  sandbox logs <id>           Print a sandbox's serial console
   sandbox rm <id>             Remove a sandbox and everything it holds
   sandbox token <id>          Mint a token scoped to one sandbox
   sandbox checkpoint <verb>   Take, list, show or forget a sandbox's images
@@ -61,6 +64,9 @@ sandbox-scoped token may exec in its own sandbox and read it, and nothing else.`
 	cmd.AddCommand(newSandboxListCommand())
 	cmd.AddCommand(newSandboxInspectCommand())
 	cmd.AddCommand(newSandboxExecCommand())
+	cmd.AddCommand(newSandboxCopyCommand())
+	cmd.AddCommand(newSandboxStatusCommand())
+	cmd.AddCommand(newSandboxLogsCommand())
 	cmd.AddCommand(newSandboxRemoveCommand())
 	cmd.AddCommand(newSandboxTokenCommand())
 	cmd.AddCommand(newSandboxCheckpointCommand())

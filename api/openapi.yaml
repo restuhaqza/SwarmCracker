@@ -2644,6 +2644,266 @@ paths:
           content:
             application/vnd.swarmcracker.v1+json:
               schema: { $ref: "#/components/schemas/ErrorDocument" }
+  /v1/sandboxes/{id}/files:
+    get:
+      operationId: getSandboxFile
+      summary: Read a file or a tree out of a sandbox's workspace
+      description: >
+        Requires sandboxes:files, and the caller's sandbox selectors must name this
+        sandbox: a token minted for another sandbox is 403 with details.reason
+        "sandbox_selector_mismatch", and a runner token with no sandbox selector is
+        403 "sandbox_selector_required". The guest is asked what the path is and the
+        answer chooses the response, because a response's headers are written before
+        its body: a regular file is application/octet-stream with that file's bytes,
+        and a directory is application/x-tar with an archive of it (names relative to
+        the guest's file root, so extracting the archive lands the same tree), with
+        X-Swarmcracker-File-Kind repeating which in either case. A path that is
+        neither — a symbolic link, a device, a socket — is 400 invalid_request with
+        details.reason "unsupported_file_kind": a link is never followed, because
+        following one would copy something other than what the caller named. The path
+        is the guest's own: it is relative to the workspace root the guest agent
+        confines every file operation to, and the node passes it through rather than
+        rewriting it. A sandbox that is not ready (created, failed or stopped) is 409
+        conflict. Nothing is buffered, so a tree of any size costs a chunk of memory
+        rather than its own size; a copy that fails after the response has started
+        cannot become a typed document — the status and the media type are already on
+        the wire — and is logged instead, leaving the caller a fragment. The attempt
+        is audited as sandbox.files.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: The sandbox id.
+        - name: path
+          in: query
+          required: true
+          schema: { type: string }
+          description: >
+            The guest path to read, relative to the guest's file root.
+      responses:
+        "200":
+          description: >
+            The file's bytes (application/octet-stream) or a tar archive of the
+            directory (application/x-tar), never a JSON document: the bytes are the
+            point.
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+            X-Swarmcracker-File-Kind:
+              description: >-
+                file or dir: the shape the guest reported, which is also what the
+                media type says.
+              schema: { type: string, enum: [file, dir] }
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+            application/x-tar:
+              schema: { type: string, format: binary }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "4XX":
+          description: Typed failure
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
+    put:
+      operationId: putSandboxFile
+      summary: Write a file or a tree into a sandbox's workspace
+      description: >
+        Requires sandboxes:files and a sandbox selector that names this sandbox, the
+        same rule the read follows. The request's media type chooses the operation:
+        application/octet-stream writes one regular file, with the mode from the mode
+        parameter (default 0644, and never wider than 0777), and application/x-tar
+        extracts the archive as a tree. A tree needs the template's agent to speak the
+        untar operation, which is advertised as an optional capability: a template
+        built before it answers 501 with details.reason
+        "template_capability_missing" and details.capability "untar", and — because a
+        single file does not need untar — the same template still takes a file through
+        application/octet-stream. Any other media type, including the v1 document
+        type, is 415 unsupported_media_type. The body is streamed to the guest's own
+        framing and never buffered, so a workspace of any size costs a chunk of
+        memory; the bound on what may be written is the guest's, not a node-level cap,
+        because a workspace copy is expected to be large and the guest is the side
+        that runs out of disk. The answer reports what the guest wrote — bytes,
+        entries and entries it refused — rather than what was sent, and the attempt is
+        audited as sandbox.files.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: The sandbox id.
+        - name: path
+          in: query
+          required: true
+          schema: { type: string }
+          description: >
+            The guest path to write: a file (application/octet-stream) or the
+            directory an archive must stay inside (application/x-tar).
+        - name: mode
+          in: query
+          required: false
+          schema: { type: string, pattern: "^[0-7]{1,4}$" }
+          description: >
+            The permissions of a written file, in octal, at most 0777. Ignored for an
+            archive, which carries the modes of the entries it holds. Defaults to 0644.
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: { type: string, format: binary }
+          application/x-tar:
+            schema: { type: string, format: binary }
+      responses:
+        "200":
+          description: What the guest wrote
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/SandboxFileWrite" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "4XX":
+          description: Typed failure
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
+  /v1/sandboxes/{id}/logs:
+    get:
+      operationId: getSandboxLogs
+      summary: Read a sandbox's serial console
+      description: >
+        Requires sandboxes:read and a sandbox selector that names this sandbox. It is
+        the VMM's own record of the guest's serial console, not the guest agent's: it
+        starts before the agent is up and survives a boot that failed, which is
+        exactly when a caller needs it, so a sandbox that is not ready still has one.
+        It is addressed by the sandbox and not by the file, so a sandbox this node no
+        longer has is 404 even if its console file is still on disk — the same rule
+        the sandbox document follows — and a node configured with no log directory
+        answers 501 with details.reason "logs_unavailable" and details.capability
+        "sandboxes:logs". The response is text/plain: a console is bytes from the
+        guest's serial port, text in practice and not in guarantee. The attempt is
+        audited as sandbox.logs.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: The sandbox id.
+      responses:
+        "200":
+          description: The sandbox's serial console, as the node recorded it
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            text/plain:
+              schema: { type: string }
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "4XX":
+          description: Typed failure
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
+  /v1/sandboxes/{id}/status:
+    get:
+      operationId: getSandboxStatus
+      summary: Read a sandbox and what its guest says about itself
+      description: >
+        Requires sandboxes:read and a sandbox selector that names this sandbox. The
+        document is the sandbox's record plus two reports the guest made about itself:
+        info — its identity, kernel, resources, toolchain and the agent that answered
+        — and net — its interfaces, addresses, routes and resolver. Both are the guest
+        agent's own operations (info and net), read from inside the guest, which is
+        what makes this status structured rather than a transcript: it needs no shell
+        in the template, and it does not change when a command's formatting does. The
+        two are read in one request, so a caller never sees a status assembled from
+        two moments. A sandbox that is not ready is 409 conflict: reaching the guest
+        is what this route does. The attempt is audited as sandbox.status.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: The sandbox id.
+      responses:
+        "200":
+          description: The sandbox and what its guest reported
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/SandboxStatus" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "4XX":
+          description: Typed failure
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
   /v1/sandboxes/{id}/tokens:
     post:
       operationId: createSandboxToken
@@ -2656,7 +2916,11 @@ paths:
         this sandbox and read it, and cannot exec in another sandbox (403
         "sandbox_selector_mismatch"), create or remove one (403
         "scope_missing" with details.requiredScope "sandboxes:write") or mint
-        another (403 "scope_missing" with "sandboxes:token"). The secret is in
+        another (403 "scope_missing" with "sandboxes:token"). It does not hold
+        sandboxes:files: copying a file into a sandbox is the same power as
+        exec'ing in it, so the capability is withheld deliberately until a caller
+        needs a sandbox-scoped credential to copy — a decision, not an omission,
+        and one that is recorded here and in the sandboxes guide. The secret is in
         this response and never again; removing the sandbox deletes the token.
       parameters:
         - name: id
@@ -4858,6 +5122,132 @@ components:
             schemaVersion: { type: integer, enum: [1] }
             kind: { type: string, enum: [Sandbox] }
 
+
+    SandboxFileWrite:
+      type: object
+      required: [schemaVersion, kind, path, bytes]
+      description: >
+        What a write into a sandbox's workspace did, as the guest reports it: the
+        bytes it wrote and, for a tree, how many entries it wrote and which entries it
+        refused.
+      properties:
+        schemaVersion: { type: integer, enum: [1] }
+        kind: { type: string, enum: [SandboxFileWrite] }
+        path:
+          type: string
+          description: The guest path the bytes were written to, exactly as the caller named it.
+        bytes:
+          type: integer
+          format: int64
+          description: >
+            The file bytes the guest wrote: a copied file's size, or the sum of the
+            files in an archive. It is what landed, not what was sent.
+        entries:
+          type: integer
+          description: How many entries an archive wrote. Absent for a single file.
+        warnings:
+          type: array
+          items: { type: string }
+          description: The archive entries the guest did not write, and why.
+
+    SandboxGuestInfo:
+      type: object
+      description: >
+        What the guest knows about itself, read from its own /proc and /etc/os-release
+        rather than inferred from the template.
+      properties:
+        hostname: { type: string }
+        machineId:
+          type: string
+          description: >
+            The guest's machine id. The post-restore hook rewrites it, so two clones
+            of one checkpoint differ here.
+        kernelRelease: { type: string, description: 'The kernel the guest is running.' }
+        kernelVersion: { type: string }
+        machine: { type: string, description: "The guest's architecture, as its kernel names it." }
+        osName: { type: string, description: "From the guest's /etc/os-release; empty in a template without one." }
+        osId: { type: string }
+        cpus: { type: integer }
+        memoryTotalBytes: { type: integer, format: int64 }
+        uptimeSeconds:
+          type: number
+          format: double
+          description: >
+            The guest's own uptime. A restore rewrites it, so it measures the running
+            guest and not the checkpoint it came from.
+        protocol: { type: string, description: 'The agent protocol version the guest speaks.' }
+        agentVersion: { type: string }
+        buildId: { type: string, description: 'The exact agent build, normally the commit.' }
+        bootId: { type: string, description: "This boot's identity; it changes on reboot and on restore." }
+        tools:
+          type: array
+          items: { type: string }
+          description: >
+            The tools the template's own directories hold, sorted by name. It is how a
+            caller tells whether a template ships a shell or tar.
+
+    SandboxNetInterface:
+      type: object
+      required: [name, index, up]
+      properties:
+        name: { type: string }
+        index: { type: integer, description: "The kernel's interface index, which a route's device refers to." }
+        mac: { type: string }
+        mtu: { type: integer }
+        up: { type: boolean }
+        loopback: { type: boolean, description: "Set on lo: a sandbox's loopback is its own." }
+        addresses:
+          type: array
+          items: { type: string }
+          description: The interface's addresses in CIDR form, sorted.
+
+    SandboxNetRoute:
+      type: object
+      required: [family, destination]
+      properties:
+        family: { type: string, enum: [ipv4, ipv6] }
+        destination: { type: string }
+        gateway: { type: string, description: 'The next hop; absent for an on-link route.' }
+        device: { type: string }
+        metric: { type: integer }
+
+    SandboxGuestNet:
+      type: object
+      required: [interfaces, routes, resolvers]
+      description: The guest's own view of its network.
+      properties:
+        interfaces:
+          type: array
+          items: { $ref: "#/components/schemas/SandboxNetInterface" }
+        routes:
+          type: array
+          items: { $ref: "#/components/schemas/SandboxNetRoute" }
+        resolvers:
+          type: array
+          items: { type: string }
+          description: >
+            The guest's /etc/resolv.conf nameservers. An empty list means the guest has
+            none configured, not that the read failed.
+        search:
+          type: array
+          items: { type: string }
+
+    SandboxStatus:
+      allOf:
+        - $ref: "#/components/schemas/Sandbox"
+        - type: object
+          required: [schemaVersion, kind, info, net]
+          properties:
+            schemaVersion: { type: integer, enum: [1] }
+            kind: { type: string, enum: [SandboxStatus] }
+            info:
+              allOf:
+                - $ref: "#/components/schemas/SandboxGuestInfo"
+              description: What the guest reported about itself.
+            net:
+              allOf:
+                - $ref: "#/components/schemas/SandboxGuestNet"
+              description: How the guest sees its own network.
     SandboxCreate:
       type: object
       required: [template]
