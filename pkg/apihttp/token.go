@@ -394,6 +394,22 @@ func (s *TokenStore) Create(name, role string) (string, Token, error) {
 	return s.CreateWithOptions(name, role, TokenOptions{})
 }
 
+// parseTokenExpiry is the one rule for an expiry a caller names: an RFC3339 instant in the
+// future. The store enforces it, and so does the sandbox token route — which has to compare
+// the instant with the sandbox's deadline before the store sees it — so both read the format
+// from here rather than keeping a rule each that could drift.
+func parseTokenExpiry(raw string) (time.Time, error) {
+	at, err := time.Parse(time.RFC3339, strings.TrimSpace(raw))
+	if err != nil {
+		return time.Time{}, output.NewErrorf(output.CodeInvalid,
+			"expires-at must be an RFC3339 timestamp: %v", err)
+	}
+	if !at.After(time.Now()) {
+		return time.Time{}, output.NewError(output.CodeInvalid, "expires-at must be in the future")
+	}
+	return at, nil
+}
+
 // CreateWithOptions validates name, role and options, generates the secret and
 // persists the token. The returned secret is the only time the plaintext is
 // available.
@@ -429,13 +445,9 @@ func (s *TokenStore) CreateWithOptions(name, role string, opts TokenOptions) (st
 
 	expiresAt := strings.TrimSpace(opts.ExpiresAt)
 	if expiresAt != "" {
-		at, parseErr := time.Parse(time.RFC3339, expiresAt)
+		at, parseErr := parseTokenExpiry(expiresAt)
 		if parseErr != nil {
-			return "", Token{}, output.NewErrorf(output.CodeInvalid,
-				"expires-at must be an RFC3339 timestamp: %v", parseErr)
-		}
-		if !at.After(time.Now()) {
-			return "", Token{}, output.NewError(output.CodeInvalid, "expires-at must be in the future")
+			return "", Token{}, parseErr
 		}
 		expiresAt = at.UTC().Format(time.RFC3339)
 	}

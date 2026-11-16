@@ -120,6 +120,23 @@ func (s *Server) listSandboxes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A credential bound to specific sandboxes may not read the node's inventory of them.
+	// The list is every sandbox on the node — other tenants' included — and a token minted
+	// for one sandbox is not a reader of the node: the acceptance rule is that such a token
+	// cannot list sandboxes, and a list filtered to its own would still answer "what else is
+	// here" one request at a time. Its own sandbox stays readable by id, and its status,
+	// console and file routes answer for it; an operator or admin token with no sandbox
+	// selector lists as before, and so does the local socket.
+	if identity, ok := IdentityFrom(r.Context()); ok && !identity.Sandboxes.Empty() {
+		s.writeError(w, r, output.NewError(output.CodeForbidden,
+			"this credential is bound to specific sandboxes, and the node's sandbox list is not its to read").
+			WithDetails(map[string]any{
+				"reason":     "sandbox_list_not_permitted",
+				"sandboxIds": identity.Sandboxes.SandboxIDs,
+			}))
+		return
+	}
+
 	records, skipped, err := s.cfg.Sandboxes.List()
 	if err != nil {
 		s.writeError(w, r, sandboxAPIError(err))
@@ -195,7 +212,17 @@ func (s *Server) getSandbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rec, err := s.cfg.Sandboxes.Get(r.PathValue("id"))
+	// A credential bound to specific sandboxes reads those and no others. The check runs
+	// before the lookup, so a bound token asking about another sandbox gets the same 403
+	// whether or not that sandbox exists — a refusal must not confirm what is on the node.
+	id := r.PathValue("id")
+	identity, _ := IdentityFrom(r.Context())
+	if err := identity.AuthorizeSandboxRead(id); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+
+	rec, err := s.cfg.Sandboxes.Get(id)
 	if err != nil {
 		s.writeError(w, r, sandboxAPIError(err))
 		return
@@ -312,7 +339,8 @@ func (s *Server) createSandboxToken(w http.ResponseWriter, r *http.Request) {
 
 	// A token for a sandbox this node does not have would be a credential for
 	// nothing, and would be inherited by the next sandbox minted with the same ID.
-	if _, err := s.cfg.Sandboxes.Get(id); err != nil {
+	rec, err := s.cfg.Sandboxes.Get(id)
+	if err != nil {
 		s.writeError(w, r, sandboxAPIError(err))
 		return
 	}
@@ -328,10 +356,19 @@ func (s *Server) createSandboxToken(w http.ResponseWriter, r *http.Request) {
 		name = "sandbox " + id
 	}
 
+	// The token cannot outlive the sandbox it is for: a credential for a sandbox the reaper
+	// has taken back is a key to nothing, and a caller that asked for an expiry past the
+	// sandbox's own deadline is told so rather than given one that will not be honoured.
+	expiresAt, err := sandboxTokenExpiry(rec, req.ExpiresAt, time.Now())
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+
 	secret, tok, err := s.cfg.Tokens.CreateWithOptions(name, RoleRunner, TokenOptions{
 		Scopes:           []string{string(ScopeSandboxesRead), string(ScopeSandboxesExec)},
 		SandboxSelectors: &SandboxSelectors{SandboxIDs: []string{id}},
-		ExpiresAt:        req.ExpiresAt,
+		ExpiresAt:        expiresAt,
 	})
 	if err != nil {
 		s.writeError(w, r, err)
@@ -426,6 +463,59 @@ func (s *Server) unexposeSandboxPort(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeJSON(w, r, http.StatusOK, v1.NewSandboxDocument(sandboxDocument(rec)))
+}
+
+// sandboxTokenExpiry bounds a token's life by the sandbox it is bound to, and returns the
+// expiry to store.
+//
+// The sandbox's idle TTL is the only deadline the node has for it: a sandbox nothing uses
+// again is taken back at LastActive+TTL, so a credential for it must not be good for
+// longer. The rule has two halves because both are what a caller means:
+//
+//   - an expiry the caller named is refused when it outlives the sandbox, because a request
+//     the node cannot honour is answered rather than silently shortened;
+//   - a token with no expiry gets the sandbox's own deadline, because "never expires" for a
+//     credential bound to a sandbox that will is a claim about the sandbox that is not true.
+//
+// A sandbox with no TTL never idles out, so nothing bounds its tokens; removing it still
+// revokes them (the manager revokes the tokens scoped to a sandbox when it frees it), and a
+// token past its own expiry is refused by the store, so the two halves together are what
+// keeps a credential from outliving what it authenticates.
+func sandboxTokenExpiry(rec sandbox.Record, requested string, now time.Time) (string, error) {
+	ttl := rec.TTL()
+	if ttl <= 0 {
+		return strings.TrimSpace(requested), nil
+	}
+
+	// The token store keeps an expiry at RFC3339's one-second resolution, so the deadline is
+	// rounded down: an expiry is then never later than the sandbox's own. A deadline already
+	// at or before now rounds to an instant in the past, which the store refuses — that case
+	// is the next whole second, which is the honest answer for a sandbox the reaper is about
+	// to take back.
+	deadline := rec.LastActive.Add(ttl).Truncate(time.Second)
+	if !deadline.After(now) {
+		deadline = now.Truncate(time.Second).Add(time.Second)
+	}
+
+	requested = strings.TrimSpace(requested)
+	if requested == "" {
+		return deadline.UTC().Format(time.RFC3339), nil
+	}
+
+	asked, err := parseTokenExpiry(requested)
+	if err != nil {
+		return "", err
+	}
+	if asked.After(deadline) {
+		return "", output.NewErrorf(output.CodeInvalid,
+			"sandbox %s is taken back at %s if nothing uses it, so a token for it cannot expire at %s",
+			rec.ID, deadline.UTC().Format(time.RFC3339), asked.UTC().Format(time.RFC3339)).
+			WithDetails(map[string]any{
+				"reason":           "token_outlives_sandbox",
+				"sandboxExpiresAt": deadline.UTC().Format(time.RFC3339),
+			})
+	}
+	return requested, nil
 }
 
 // sandboxesAvailable answers 501 when this node serves no sandbox control plane, and

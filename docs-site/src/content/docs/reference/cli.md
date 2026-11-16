@@ -827,7 +827,9 @@ and `net` reports rather than parsing a command's output, so a template needs no
 it.
 **`sandbox expose` / `unexpose` flags:** `--port` (required), and `--ttl <duration>` on
 `expose` (`0` uses the node's default, negative means never).
-**`sandbox token` flags:** `--name`, `--expires-at`.
+**`sandbox token` flags:** `--name`, `--expires-at` (bounded by the sandbox's own idle
+TTL: an expiry past it is refused, and a token minted without one gets the sandbox's
+deadline).
 **Persistent flag:** `--sandbox-socket <path>` (default `$SWARM_SANDBOX_SOCKET`, else
 `/var/run/swarmcracker/sandboxd.sock`).
 
