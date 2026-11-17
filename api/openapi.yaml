@@ -2390,9 +2390,12 @@ paths:
         sandbox control plane answers 501 not_implemented with
         details.capability "sandboxes" rather than an empty list. A record file
         the node cannot read is reported in warnings[] (code
-        "sandbox_record_unreadable") and does not fail the listing. sandboxes:read
-        is not narrowed by sandbox selectors — selectors gate the operations that
-        reach inside one sandbox, exactly as task selectors gate exec.
+        "sandbox_record_unreadable") and does not fail the listing. A credential
+        that carries sandbox selectors is refused this listing — 403 forbidden with
+        details.reason "sandbox_list_not_permitted" and details.sandboxIds — because
+        the node's inventory is every tenant's sandboxes and a token minted for one
+        is not a reader of the node; a filtered list would still answer "what else
+        is here" one request at a time. Its own sandbox stays readable by id.
       responses:
         "200":
           description: Every sandbox this node has a record of
@@ -2487,9 +2490,15 @@ paths:
       operationId: getSandbox
       summary: Read one sandbox
       description: >
-        Requires sandboxes:read. A sandbox this node does not have is 404
-        not_found. What the document does not carry is host layout: the sandbox's
-        jail, disk and agent-token path stay on the node.
+        Requires sandboxes:read. A credential that carries sandbox selectors reads
+        only the sandboxes it names: another sandbox's id — or one this node does
+        not have — is 403 forbidden with details.reason
+        "sandbox_selector_mismatch" and details.sandboxId, refused before the
+        lookup so a refusal never confirms what is on the node. A credential with
+        no sandbox selector reads as its scope allows, exactly as before. A sandbox
+        this node does not have is 404 not_found. What the document does not carry
+        is host layout: the sandbox's jail, disk and agent-token path stay on the
+        node.
       parameters:
         - name: id
           in: path
@@ -2922,6 +2931,17 @@ paths:
         needs a sandbox-scoped credential to copy — a decision, not an omission,
         and one that is recorded here and in the sandboxes guide. The secret is in
         this response and never again; removing the sandbox deletes the token.
+
+        The token cannot outlive the sandbox. Without expiresAt it is given the
+        sandbox's own deadline — the idle TTL measured from the sandbox's last use,
+        which is when the reaper would take it back — and an expiresAt past that
+        deadline is refused with 400 invalid_request, details.reason
+        "token_outlives_sandbox" and details.sandboxExpiresAt, rather than
+        shortened. A sandbox with no idle TTL never idles out, so nothing bounds
+        its tokens; removing the sandbox revokes them either way. And because the
+        token carries sandbox selectors, it reads only its own sandbox: GET
+        /v1/sandboxes is refused (403 "sandbox_list_not_permitted"), and another
+        sandbox's document by id is refused (403 "sandbox_selector_mismatch").
       parameters:
         - name: id
           in: path

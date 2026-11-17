@@ -402,10 +402,23 @@ nothing else. Over the API (`-H https://node:4250 --ca tls.crt --token-file …`
 | `POST /v1/sandboxes` (register one) | `403` `forbidden`, `details.reason` = `scope_missing`, `details.requiredScope` = `sandboxes:write` |
 | `POST /v1/sandboxes/<id>/tokens` (issue one) | `403` `forbidden`, `details.reason` = `scope_missing`, `details.requiredScope` = `sandboxes:token` |
 | `GET`/`PUT /v1/sandboxes/<id>/files` (copy files) | `403` `forbidden`, `details.reason` = `scope_missing`, `details.requiredScope` = `sandboxes:files` |
+| `GET /v1/sandboxes` (list the node's sandboxes) | `403` `forbidden`, `details.reason` = `sandbox_list_not_permitted`, `details.sandboxIds` = the sandboxes it is bound to |
+| `GET /v1/sandboxes/<another id>` (read one) | `403` `forbidden`, `details.reason` = `sandbox_selector_mismatch`, `details.sandboxId` = the sandbox asked about |
+
+The listing is refused rather than filtered: the node's inventory is every tenant's
+sandboxes, and a credential for one is not a reader of it. Its own sandbox is still readable
+by id, and `status`, `logs` and `files` answer for it when they are allowed at all.
 
 A runner token that holds `sandboxes:exec` but names no sandbox at all is refused with
 `details.reason` = `sandbox_selector_required`, because otherwise it would be a shell
 inside every sandbox on the node.
+
+**A token cannot outlive its sandbox.** Minted with no `--expires-at`, it is given the
+sandbox's own deadline — the sandbox's idle TTL measured from its last use, which is when the
+reaper would take it back. An `--expires-at` past that deadline is refused with
+`details.reason` = `token_outlives_sandbox` and `details.sandboxExpiresAt`, rather than
+silently shortened. A sandbox with no idle TTL never idles out, so nothing bounds its tokens;
+removing the sandbox revokes them either way.
 
 The sandbox's own agent credential is per boot and per sandbox too: it is written into
 that sandbox's disk and published beside its muxer, and another sandbox's guest refuses
@@ -528,9 +541,9 @@ The control plane is served on the node's v1 API. The routes are documented in
 
 | Route | Scope |
 |---|---|
-| `GET /v1/sandboxes` | `sandboxes:read` |
+| `GET /v1/sandboxes` | `sandboxes:read`, and no sandbox selector |
 | `POST /v1/sandboxes` | `sandboxes:write` |
-| `GET /v1/sandboxes/{id}` | `sandboxes:read` |
+| `GET /v1/sandboxes/{id}` | `sandboxes:read`, and a sandbox selector must name it if the credential carries one |
 | `DELETE /v1/sandboxes/{id}` | `sandboxes:write` + the sandbox selector |
 | `POST /v1/sandboxes/{id}/exec` | `sandboxes:exec` + the sandbox selector |
 | `GET /v1/sandboxes/{id}/files` | `sandboxes:files` + the sandbox selector |
@@ -610,9 +623,13 @@ These are the boundaries of the first sandbox slice, not gaps in it:
   `--user` is not part of this slice; the isolation boundary is the microVM, not the
   uid inside it.
 - **The console log is kept** after `rm`, as a task's log is.
-- **`sandboxes:read` is not narrowed by selectors.** A sandbox-scoped token lists the
-  node's sandboxes, exactly as a task-scoped token lists the cluster's tasks; the selector
-  gates exec, removal, files, logs and status.
+- **`sandboxes:read` is narrowed by the selector for both doors.** A credential bound to
+  specific sandboxes is refused the node's inventory (`GET /v1/sandboxes`) and is refused
+  **another** sandbox's document by id; it reads only the sandboxes it names. A credential
+  with no sandbox selector — an operator, an admin, the local socket, a runner narrowed by
+  tasks only — reads exactly what its scope allowed before, so no role lost a permission:
+  whether a selector-less runner should read a sandbox at all is a separate question, and
+  neither rule answers it.
 - **A sandbox-scoped token cannot copy files.** The token `sandbox token` mints holds
   exactly `sandboxes:read` and `sandboxes:exec` — read and exec, **not** `sandboxes:files`
   — so a file copy needs a credential that holds `sandboxes:files` (a runner, operator or

@@ -317,6 +317,25 @@ func (i Identity) AuthorizeSandbox(sandboxID string) error {
 		WithDetails(map[string]any{"reason": "sandbox_selector_mismatch", "sandboxId": sandboxID})
 }
 
+// AuthorizeSandboxRead decides whether this identity may read one sandbox's document.
+//
+// It is deliberately not AuthorizeSandbox: that rule fails closed for a runner with no
+// selectors, which is right for the operations that reach inside a guest and wrong here —
+// whether a selector-less runner may read a sandbox at all is a separate question, and this
+// rule does not answer it. What it does say is the epic's: a credential that carries sandbox
+// selectors may read the sandboxes it names and no others, so a token minted for one sandbox
+// cannot read another's document any more than it can list them. A credential with no
+// sandbox selector — an operator, an admin, the local socket, a runner narrowed by tasks
+// only — reads exactly what its scope allowed before.
+func (i Identity) AuthorizeSandboxRead(sandboxID string) error {
+	if i.Sandboxes.Empty() || i.Sandboxes.Matches(sandboxID) {
+		return nil
+	}
+	return output.NewError(output.CodeForbidden,
+		"token sandbox selectors do not match this sandbox").
+		WithDetails(map[string]any{"reason": "sandbox_selector_mismatch", "sandboxId": sandboxID})
+}
+
 // LocalIdentity is the identity of a request over the trusted Unix socket: the
 // socket's file mode is the credential, so it is a local administrator.
 func LocalIdentity() Identity {
