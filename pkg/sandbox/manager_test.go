@@ -644,6 +644,9 @@ func TestNewRefusesANodeThatIsMissingAPiece(t *testing.T) {
 		{"no launcher", func(c *Config) { c.Launcher = nil }},
 		{"no network policy", func(c *Config) { c.Network = nil }},
 		{"negative default TTL", func(c *Config) { c.DefaultTTL = -time.Second }},
+		// A ceiling that cannot be meant stops the node rather than being read as "no
+		// maximum", which is the same rule the quota and the idle TTL get.
+		{"negative maximum lifetime", func(c *Config) { c.MaxTTL = -time.Second }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

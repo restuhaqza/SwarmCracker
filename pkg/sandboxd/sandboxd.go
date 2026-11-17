@@ -74,6 +74,18 @@ type Config struct {
 	// DefaultTTL is how long a sandbox may idle before the reaper takes it back,
 	// for a sandbox created without a TTL of its own.
 	DefaultTTL time.Duration
+	// MaxTTL is the longest any sandbox on this node may live, whatever it does in
+	// between. Zero means no maximum, which is the default: a node that never
+	// configured one must not start expiring sandboxes on a schedule nobody chose.
+	// A create that asks for more is refused (pkg/sandbox/admission.go), and a
+	// negative value stops the daemon at start rather than being read as "no limit".
+	MaxTTL time.Duration
+	// Now is the clock this node's own loops decide at — the reaper's idle and
+	// maximum deadlines, and the timestamps on every record and change they stamp.
+	// Nil is time.Now. It is a seam so a test can move time instead of sleeping; the
+	// daemon leaves it nil, and it is the manager's one clock, not a second one per
+	// loop.
+	Now func() time.Time
 	// Events is the bus the node's sandbox changes are published on. The daemon builds
 	// one and hands the same value to the API server, so a change the manager's own
 	// loops make — a reap, a reconcile — reaches the same stream a route's change does.
@@ -183,6 +195,8 @@ func New(cfg Config) (*sandbox.Manager, *apihttp.TokenStore, error) {
 		VCPUs:           cfg.VCPUs,
 		MemoryMB:        cfg.MemoryMB,
 		DefaultTTL:      cfg.DefaultTTL,
+		MaxTTL:          cfg.MaxTTL,
+		Now:             cfg.Now,
 		Events:          cfg.Events,
 		PreviewTTL:      cfg.PreviewTTL,
 		Quota:           cfg.Quota,

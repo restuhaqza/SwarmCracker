@@ -33,6 +33,17 @@ import (
 // the checks run — the owner's count, then memory, then disk — so the report is a
 // decision a caller can act on rather than a set of reasons with no priority.
 //
+// # A third limit: how long a sandbox may live
+//
+// Capacity and share are quantities; the lifetime ceiling (admitLifetime) is not. A
+// node whose operator wants no sandbox to outlive a working day configures one, and a
+// create that asks for more is refused rather than shortened — a sandbox that quietly
+// expired earlier than it asked for would be a sandbox whose work vanishes on a
+// schedule its caller never agreed to. The granted lifetime is written on the record,
+// so it is the sandbox's own deadline and survives a restart of the node. A node with
+// no ceiling gives a sandbox that asked for nothing no maximum, which is what "the
+// node does not limit this" means.
+//
 // # What counts against a limit
 //
 // A sandbox holds memory and a disk from the moment the node starts building it until
@@ -282,6 +293,74 @@ func diskBytes(path string) int64 {
 		return 0
 	}
 	return info.Size()
+}
+
+// MaxTTLError is a create refused because the lifetime it asked for is longer than
+// this node allows. It is a refusal, not a truncation: a caller that asked for a
+// sandbox living a day and silently got one living an hour would be holding a sandbox
+// whose expiry it did not choose and cannot see, and would find out when its work
+// vanished. The same rule holds a token that would outlive its sandbox.
+type MaxTTLError struct {
+	// Requested is the lifetime the caller asked for.
+	Requested time.Duration
+	// Limit is the longest lifetime this node allows.
+	Limit time.Duration
+}
+
+func (e *MaxTTLError) Error() string {
+	return fmt.Sprintf("the requested sandbox lifetime %s is longer than this node allows (%s)",
+		e.Requested, e.Limit)
+}
+
+// Unwrap makes it an invalid request as well as its own kind: a lifetime this node
+// cannot grant is something wrong with the request, not a resource that was exhausted,
+// so it is a 400 with the numbers in details rather than a 429.
+func (e *MaxTTLError) Unwrap() error { return ErrInvalid }
+
+// admitLifetime decides how long the sandbox being admitted may exist at all, and
+// refuses a request longer than this node allows.
+//
+// It is part of admission and runs before the record exists, so a create that asked for
+// a life this node will not grant leaves nothing behind at all: no record, no namespace,
+// no disk and no VM. The lifetime it returns is what the record carries, which is how a
+// deadline survives a restart of the node.
+//
+// The request is what the caller asked for, zero meaning "the node's ceiling": a node
+// with a ceiling gives a sandbox that asked for nothing the ceiling rather than no limit
+// at all, because "I did not say" is not "let it live forever". A positive request
+// inside the ceiling is granted as asked, and one beyond it is refused. A negative
+// request cannot be meant and is refused like every other impossible input; a negative
+// ceiling is refused when the manager is built (New).
+//
+// A lifetime shorter than the second the record counts in is rounded up rather than down:
+// rounding a positive request down to zero would turn it into "no maximum at all", which is
+// the one answer a caller who asked for a limit did not ask for.
+func (m *Manager) admitLifetime(requested time.Duration) (time.Duration, error) {
+	if requested < 0 {
+		return 0, fmt.Errorf("%w: a maximum sandbox lifetime cannot be negative", ErrInvalid)
+	}
+	limit := m.cfg.MaxTTL
+	switch {
+	case limit <= 0:
+		// No ceiling on this node: the sandbox lives as long as it was asked to, and
+		// a sandbox that asked for nothing has no maximum.
+		return atLeastASecond(requested), nil
+	case requested == 0:
+		return limit, nil
+	case requested > limit:
+		return 0, &MaxTTLError{Requested: requested, Limit: limit}
+	}
+	return atLeastASecond(requested), nil
+}
+
+// atLeastASecond keeps a positive lifetime from rounding down to "no maximum" on a record
+// that counts in whole seconds. Zero stays zero, which is the only value that means "the
+// node sets no maximum".
+func atLeastASecond(d time.Duration) time.Duration {
+	if d > 0 && d < time.Second {
+		return time.Second
+	}
+	return d
 }
 
 // admit decides whether one more sandbox of this size and owner fits, before anything

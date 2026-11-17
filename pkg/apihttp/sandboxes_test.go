@@ -532,13 +532,14 @@ func TestCreateSandboxMapsTheRequest(t *testing.T) {
 	require.NoError(t, err)
 
 	rec := sandboxRequest(t, srv, admin, http.MethodPost, "/v1/sandboxes",
-		`{"template":"base@1","owner":"ci","egress":["example.com:443"],"idleTtlSeconds":120,"vcpus":2,"memoryMB":512}`)
+		`{"template":"base@1","owner":"ci","egress":["example.com:443"],"idleTtlSeconds":120,"maxTtlSeconds":600,"vcpus":2,"memoryMB":512}`)
 	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
 
 	assert.Equal(t, "base@1", boxes.createReq.Template)
 	assert.Equal(t, "ci", boxes.createReq.Owner)
 	assert.Equal(t, []string{"example.com:443"}, boxes.createReq.Allow)
 	assert.Equal(t, 120*time.Second, boxes.createReq.TTL)
+	assert.Equal(t, 600*time.Second, boxes.createReq.MaxTTL)
 	assert.Equal(t, 2, boxes.createReq.VCPUs)
 	assert.Equal(t, 512, boxes.createReq.MemoryMB)
 
@@ -911,6 +912,86 @@ func TestCreateSandboxRefusesATtlItCannotRepresent(t *testing.T) {
 	doc := decodeErrorBody(t, rec)
 	assert.Equal(t, "invalid_ttl", doc.Error.Details["reason"])
 	assert.Empty(t, boxes.createReq.Template, "an unrepresentable TTL never reaches the node")
+}
+
+// TestCreateSandboxRefusesAMaximumLifetimeItCannotRepresent pins the body rule for the
+// maximum lifetime: zero is "the node's ceiling" and a positive value is a request, so
+// anything below zero is a mistake the node is never asked about. A lifetime longer than
+// the node's ceiling is not this rule — it is the node's own refusal, tested beside the
+// quota refusal.
+func TestCreateSandboxRefusesAMaximumLifetimeItCannotRepresent(t *testing.T) {
+	boxes := &fakeSandboxes{records: map[string]sandbox.Record{}}
+	srv, store := sandboxServer(t, boxes)
+	admin, _, err := store.Create("admin", RoleAdmin)
+	require.NoError(t, err)
+
+	rec := sandboxRequest(t, srv, admin, http.MethodPost, "/v1/sandboxes",
+		`{"template":"base","maxTtlSeconds":-1}`)
+	require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+	doc := decodeErrorBody(t, rec)
+	assert.Equal(t, string(output.CodeInvalid), doc.Error.Code)
+	assert.Equal(t, "invalid_max_ttl", doc.Error.Details["reason"])
+	assert.Empty(t, boxes.createReq.Template, "an unrepresentable lifetime never reaches the node")
+}
+
+// TestMaxTtlRefusalAnswersWithTheLimit pins the other refusal: a lifetime the node will
+// not grant is a 400 with the numbers — what was asked for and what the node allows — and
+// it is not the quota code, because nothing about the node is exhausted.
+func TestMaxTtlRefusalAnswersWithTheLimit(t *testing.T) {
+	boxes := &fakeSandboxes{createErr: &sandbox.MaxTTLError{
+		Requested: 2 * time.Hour,
+		Limit:     time.Hour,
+	}}
+	srv, store := sandboxServer(t, boxes)
+	admin, _, err := store.Create("admin", RoleAdmin)
+	require.NoError(t, err)
+
+	rec := sandboxRequest(t, srv, admin, http.MethodPost, "/v1/sandboxes",
+		`{"template":"base","maxTtlSeconds":7200}`)
+	require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+
+	doc := decodeErrorBody(t, rec)
+	assert.Equal(t, string(output.CodeInvalid), doc.Error.Code)
+	assert.False(t, doc.Error.Retryable, "a lifetime the node will not grant does not free up: retrying the same request gets the same answer")
+	assert.Equal(t, "max_ttl_too_long", doc.Error.Details["reason"])
+	assert.Equal(t, float64(3600), doc.Error.Details["limit"])
+	assert.Equal(t, float64(7200), doc.Error.Details["requested"])
+	assert.Contains(t, doc.Error.Message, "1h0m0s", "the refusal says what the node allows")
+}
+
+// TestSandboxDocumentCarriesTheMaximumLifetime pins the read model: a sandbox with a
+// deadline reports how long it may live and when that deadline is, so a caller can see
+// the expiry it is held to rather than inferring it from the node's configuration.
+func TestSandboxDocumentCarriesTheMaximumLifetime(t *testing.T) {
+	created := time.Date(2026, 11, 12, 10, 0, 0, 0, time.UTC)
+	boxes := &fakeSandboxes{records: map[string]sandbox.Record{
+		"bounded": {
+			ID: "bounded", State: sandbox.StateReady, Template: "base@1",
+			Created: created, Updated: created, LastActive: created,
+			IdleTTLSeconds: 3600, MaxTTLSeconds: 86400,
+		},
+		"unbounded": {ID: "unbounded", State: sandbox.StateReady, Created: created, Updated: created, LastActive: created},
+	}}
+	srv, store := sandboxServer(t, boxes)
+	admin, _, err := store.Create("admin", RoleAdmin)
+	require.NoError(t, err)
+
+	for _, tc := range []struct {
+		id        string
+		wantTTL   int64
+		wantUntil string
+	}{
+		{"bounded", 86400, created.Add(24 * time.Hour).Format(time.RFC3339Nano)},
+		{"unbounded", 0, ""},
+	} {
+		rec := sandboxRequest(t, srv, admin, http.MethodGet, "/v1/sandboxes/"+tc.id, "")
+		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+		var doc v1.SandboxDocument
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &doc))
+		assert.Equal(t, tc.wantTTL, doc.MaxTTLSeconds)
+		assert.Equal(t, tc.wantUntil, doc.MaxExpiresAt, "a sandbox with no maximum reports no deadline")
+	}
 }
 
 // codedTemplateError is a template refusal as pkg/golden reports it: its own stable

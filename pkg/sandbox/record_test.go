@@ -183,3 +183,129 @@ func TestExposedPortsAreValidated(t *testing.T) {
 	rec.Ports = []ExposedPort{{GuestPort: 8080, Address: "127.9.9.9", Created: created}}
 	require.NoError(t, rec.validate())
 }
+
+// TestReapDueIsWhicheverLimitComesFirst pins the rule the two deadlines share: a sandbox
+// is taken back by whichever it reaches first, and one past both is reported against the
+// limit whose deadline came first — the limit that actually took it. The matrix is
+// asymmetric on purpose: the same sandbox at the same instant is an idle reap or a
+// maximum-lifetime reap depending only on which deadline is earlier, so a rule that
+// always answered one of them would pass a symmetric case and fail here.
+func TestReapDueIsWhicheverLimitComesFirst(t *testing.T) {
+	created := time.Date(2026, 11, 12, 10, 0, 0, 0, time.UTC)
+
+	// Every case names the instant the reaper looks and the last time the sandbox was
+	// used, both as offsets from its creation, so each one is a state and not a duration
+	// of elapsed test time.
+	cases := []struct {
+		name            string
+		maxTTL, idleTTL time.Duration
+		lastActive, now time.Duration
+		want            string
+		wantDue         bool
+	}{
+		{"inside both", 2 * time.Hour, 30 * time.Minute, 0, 10 * time.Minute, "", false},
+		// The idle deadline came first: unused for forty-five minutes with a thirty
+		// minute idle TTL, well inside the four hour maximum.
+		{"past the idle deadline only", 4 * time.Hour, 30 * time.Minute, 0, 45 * time.Minute, ReapLimitIdle, true},
+		// The maximum deadline came first, and the sandbox was used a minute ago: an exec
+		// postpones the idle TTL and does nothing for this one, which is exactly the
+		// difference between the two limits.
+		{"past the maximum deadline only", 2 * time.Hour, 30 * time.Minute, 100 * time.Minute, 121 * time.Minute, ReapLimitMax, true},
+		// Both are past. The idle deadline (last used at creation, plus thirty minutes)
+		// came before the maximum one (two hours), so idle is the limit that took it.
+		{"both, idle deadline first", 2 * time.Hour, 30 * time.Minute, 0, 24 * time.Hour, ReapLimitIdle, true},
+		// Both are past, and this time the maximum deadline (an hour) came first, three
+		// quarters of an hour before the idle deadline did.
+		{"both, maximum deadline first", time.Hour, time.Hour, 90 * time.Minute, 151 * time.Minute, ReapLimitMax, true},
+		{"no limit at all", 0, 0, 0, 24 * time.Hour, "", false},
+		{"no maximum, idle past", 0, time.Minute, 0, time.Hour, ReapLimitIdle, true},
+		{"no idle TTL, maximum past", time.Hour, 0, 0, 2 * time.Hour, ReapLimitMax, true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := testRecord("sbx-1")
+			rec.Created = created
+			rec.LastActive = created.Add(tc.lastActive)
+			rec.IdleTTLSeconds = int64(tc.idleTTL / time.Second)
+			rec.MaxTTLSeconds = int64(tc.maxTTL / time.Second)
+
+			limit, due := rec.ReapDue(created.Add(tc.now))
+			assert.Equal(t, tc.wantDue, due)
+			assert.Equal(t, tc.want, limit)
+		})
+	}
+}
+
+// TestMaxDeadlineIsTheRecordsOwnInstant pins the property the record field exists for: the
+// deadline is a function of the record alone, so a node that restarts reads the same
+// deadline back rather than starting the clock again.
+func TestMaxDeadlineIsTheRecordsOwnInstant(t *testing.T) {
+	created := time.Date(2026, 11, 12, 10, 0, 0, 0, time.UTC)
+
+	rec := testRecord("sbx-1")
+	rec.Created = created
+	rec.MaxTTLSeconds = int64(90 * time.Minute / time.Second)
+	assert.Equal(t, created.Add(90*time.Minute), rec.MaxDeadline())
+	assert.Equal(t, 90*time.Minute, rec.MaxTTL())
+	assert.False(t, rec.MaxExpired(created.Add(89*time.Minute)), "a second before the deadline it is alive")
+	assert.True(t, rec.MaxExpired(created.Add(90*time.Minute)), "the deadline itself is the end")
+
+	// A sandbox this node sets no maximum for has no deadline to report, which is what a
+	// reader prints as "none" rather than as the zero time.
+	rec.MaxTTLSeconds = 0
+	assert.True(t, rec.MaxDeadline().IsZero())
+	assert.Zero(t, rec.MaxTTL())
+	assert.False(t, rec.MaxExpired(created.Add(1000*time.Hour)))
+
+	// A record with no creation time has no anchor for a maximum, so it has no deadline
+	// rather than one measured from the zero time.
+	rec.MaxTTLSeconds = 3600
+	rec.Created = time.Time{}
+	assert.True(t, rec.MaxDeadline().IsZero())
+	assert.False(t, rec.MaxExpired(created.Add(1000*time.Hour)))
+}
+
+// TestRecordValidateRefusesANegativeMaximum is the store's side of the ceiling: a record
+// whose maximum lifetime is negative is one no reader can act on, and the store refuses
+// to serve it rather than treating it as unlimited.
+func TestRecordValidateRefusesANegativeMaximum(t *testing.T) {
+	rec := testRecord("sbx-1")
+	rec.MaxTTLSeconds = -1
+	err := rec.validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "negative maximum lifetime")
+}
+
+// TestDeadlineIsTheEarlierOfTheTwoLimits pins the instant a reader that has to bound
+// something else by this sandbox's life gets — a token bound to a sandbox, above all: the
+// earlier of the idle deadline and the maximum lifetime, and the zero time when the sandbox
+// has neither.
+func TestDeadlineIsTheEarlierOfTheTwoLimits(t *testing.T) {
+	created := time.Date(2026, 11, 12, 10, 0, 0, 0, time.UTC)
+
+	cases := []struct {
+		name       string
+		maxTTL     time.Duration
+		idleTTL    time.Duration
+		lastActive time.Duration
+		want       time.Time
+	}{
+		{"neither", 0, 0, 0, time.Time{}},
+		{"the idle TTL only", 0, 30 * time.Minute, 5 * time.Minute, created.Add(35 * time.Minute)},
+		{"the maximum lifetime only", 2 * time.Hour, 0, 0, created.Add(2 * time.Hour)},
+		{"the maximum lifetime is earlier", time.Hour, 4 * time.Hour, 0, created.Add(time.Hour)},
+		{"the idle deadline is earlier", 4 * time.Hour, 30 * time.Minute, 0, created.Add(30 * time.Minute)},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := testRecord("sbx-1")
+			rec.Created = created
+			rec.LastActive = created.Add(tc.lastActive)
+			rec.IdleTTLSeconds = int64(tc.idleTTL / time.Second)
+			rec.MaxTTLSeconds = int64(tc.maxTTL / time.Second)
+			assert.Equal(t, tc.want, rec.Deadline())
+		})
+	}
+}

@@ -14,9 +14,10 @@ import (
 // A sandbox is a machine someone asked for and may have walked away from. Nothing in
 // the guest tells this node whether its work is done, and a sandbox that is never
 // used again would otherwise hold a VM, a namespace, a disk and a cgroup for as long
-// as the node runs. So every sandbox may carry an idle TTL (Record.IdleTTLSeconds),
-// and the reaper is the node's answer to what happens when it expires: the sandbox is
-// removed exactly as `rm` removes it, and nothing of it is left.
+// as the node runs. So every sandbox may carry an idle TTL (Record.IdleTTLSeconds) —
+// and, on a node that configured one, a maximum lifetime (Record.MaxTTLSeconds) that no
+// exec pushes back — and the reaper is the node's answer to what happens when either
+// expires: the sandbox is removed exactly as `rm` removes it, and nothing of it is left.
 //
 // # Idle means nobody asked it to do anything
 //
@@ -33,6 +34,22 @@ import (
 // record left behind all reach the reaper the same way: their last activity is older
 // than their TTL, so they are removed. There is no separate garbage collection for
 // failed records, because a second age rule would be a second thing to get wrong.
+//
+// # Two limits, whichever comes first
+//
+// The idle TTL and the maximum lifetime run side by side: a sandbox is taken back by
+// whichever it reaches first (Record.ReapDue), and a sandbox past both is reported
+// against the one whose deadline came first. An exec postpones the idle TTL and does
+// nothing at all to the maximum lifetime — that is the difference between them, and it
+// is why a long-lived sandbox that must keep running is given a ceiling it can live
+// with rather than being left unbounded.
+//
+// # The clock is the manager's
+//
+// Every decision here is a comparison against a clock, and that clock is the manager's
+// one (Config.Now, which nil means time.Now). Reap takes the instant it decides at, and
+// ReapEvery reads the manager's clock on each pass: one clock per manager, so a test can
+// move time instead of sleeping, and the loops cannot disagree about what time it is.
 
 // Reaped is one sandbox the reaper took back, and what that freed.
 type Reaped struct {
@@ -42,6 +59,9 @@ type Reaped struct {
 	State State
 	// IdleFor is how long it had been unused when it was taken.
 	IdleFor time.Duration
+	// Limit is which limit took it back: ReapLimitIdle when it had been unused for its
+	// idle TTL, ReapLimitMax when it had outlived its maximum lifetime.
+	Limit string
 	// Freed is what the removal freed. It is zero when Err is set.
 	Freed Freed
 	// Err is why this sandbox could not be reaped. The others still are: one
@@ -49,10 +69,11 @@ type Reaped struct {
 	Err error
 }
 
-// Reap takes back every sandbox that has been idle past its own TTL at now, and
-// reports what it removed. It returns an error only when the node's records cannot be
-// read at all; a sandbox that could not be removed is reported in its Reaped entry,
-// so one stuck sandbox does not hide the others.
+// Reap takes back every sandbox that has reached a limit of its own at now — its idle
+// TTL, its maximum lifetime, or both — and reports what it removed. It returns an error
+// only when the node's records cannot be read at all; a sandbox that could not be
+// removed is reported in its Reaped entry, so one stuck sandbox does not hide the
+// others.
 //
 // It is the one-shot form the CLI runs and the loop below repeats; they are the same
 // decision, so a node that reaps by hand and a node that reaps on a timer cannot
@@ -71,16 +92,17 @@ func (m *Manager) Reap(ctx context.Context, now time.Time) ([]Reaped, error) {
 		if err := ctx.Err(); err != nil {
 			return reaped, err
 		}
-		if !rec.Idle(now) {
+		limit, due := rec.ReapDue(now)
+		if !due {
 			continue
 		}
 
-		entry := Reaped{ID: rec.ID, State: rec.State, IdleFor: rec.IdleFor(now)}
+		entry := Reaped{ID: rec.ID, State: rec.State, Limit: limit, IdleFor: rec.IdleFor(now)}
 		freed, err := m.Remove(ctx, rec.ID)
 		if err != nil {
 			entry.Err = err
-			log.Warn().Err(err).Str("sandbox_id", rec.ID).
-				Msg("Could not reap an idle sandbox; it stays for the next pass")
+			log.Warn().Err(err).Str("sandbox_id", rec.ID).Str("limit", entry.Limit).
+				Msg("Could not reap a sandbox past its limit; it stays for the next pass")
 		} else {
 			entry.Freed = freed
 			// A removal nobody asked for is still a removal a watcher has to hear
@@ -90,9 +112,11 @@ func (m *Manager) Reap(ctx context.Context, now time.Time) ([]Reaped, error) {
 			log.Info().
 				Str("sandbox_id", rec.ID).
 				Str("state", string(rec.State)).
+				Str("limit", entry.Limit).
 				Dur("idle_for", entry.IdleFor).
 				Dur("ttl", rec.TTL()).
-				Msg("Reaped an idle sandbox")
+				Dur("max_ttl", rec.MaxTTL()).
+				Msg("Reaped a sandbox past its limit")
 		}
 		reaped = append(reaped, entry)
 	}

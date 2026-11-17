@@ -118,6 +118,7 @@ func appFlags() []cli.Flag {
 		&cli.IntFlag{Name: "memory", Value: defaultMemoryMB, Usage: "Default memory (MB) per sandbox"},
 		&cli.DurationFlag{Name: "reap-interval", Value: defaultReapEvery, Usage: "How often idle sandboxes are looked for"},
 		&cli.DurationFlag{Name: "default-ttl", Value: 0, Usage: "Idle TTL applied to a sandbox created without one (0 = never reap)"},
+		&cli.DurationFlag{Name: "max-ttl", Value: 0, Usage: "Longest a sandbox may live, whatever it does in between (0 = no maximum; a create that asks for more is refused)"},
 		&cli.IntFlag{Name: "quota-max-per-owner", Value: sandbox.DefaultMaxSandboxesPerOwner, Usage: "How many sandboxes one owner may hold at once (0 = the built-in default); the next create for that owner answers 429 quota_exceeded"},
 		&cli.IntFlag{Name: "quota-memory-mb", Value: sandbox.DefaultNodeMemoryMB, Usage: "Guest memory (MB) this node admits for sandboxes together (0 = the built-in default)"},
 		&cli.IntFlag{Name: "quota-disk-mb", Value: sandbox.DefaultNodeDiskMB, Usage: "Disk (MB) this node admits for sandbox disks together (0 = the built-in default)"},
@@ -262,6 +263,7 @@ func build(ctx *cli.Context, events *sandbox.Events) (*sandbox.Manager, *apihttp
 		VCPUs:           ctx.Int("vcpus"),
 		MemoryMB:        ctx.Int("memory"),
 		DefaultTTL:      ctx.Duration("default-ttl"),
+		MaxTTL:          ctx.Duration("max-ttl"),
 		ReadyTimeout:    ctx.Duration("ready-timeout"),
 		// A preview's default comes from this flag rather than from the caller, because
 		// the caller that exposes a port is the one least likely to remember it.

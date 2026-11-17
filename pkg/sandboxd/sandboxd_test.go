@@ -176,6 +176,15 @@ func TestNewRefusesWhatItCannotBuild(t *testing.T) {
 	_, _, err = New(cfg)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "uid range")
+
+	// A maximum lifetime that cannot be meant stops the daemon at start rather than
+	// being read as "no maximum", which is what a typo in --max-ttl would otherwise
+	// become: a node that stops expiring sandboxes without saying so.
+	cfg = daemonConfig(t, stateDir)
+	cfg.MaxTTL = -time.Second
+	_, _, err = New(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "maximum sandbox lifetime")
 }
 
 // TestStartSurvivesASweepThatCannotRun pins the two ends of the start pass: a node with no

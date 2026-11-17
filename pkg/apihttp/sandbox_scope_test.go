@@ -72,6 +72,13 @@ func TestSandboxTokenExpiryIsBoundedByTheSandbox(t *testing.T) {
 		"forever": {ID: "forever", State: sandbox.StateReady},
 		// Already past its idle TTL: the reaper's next pass takes it back.
 		"due": {ID: "due", State: sandbox.StateReady, IdleTTLSeconds: 60, LastActive: now.Add(-2 * time.Minute)},
+		// Used a moment ago, so its idle deadline is half a minute out, but its maximum
+		// lifetime runs out first: the sandbox ends at the earlier deadline, and a token
+		// bounded only by the idle TTL would outlive it.
+		"capped": {
+			ID: "capped", State: sandbox.StateReady, IdleTTLSeconds: 60,
+			LastActive: now.Add(-30 * time.Second), Created: now.Add(-10 * time.Second), MaxTTLSeconds: 10,
+		},
 	}}
 	srv, store := sandboxServer(t, boxes)
 	admin, _, err := store.Create("admin", RoleAdmin)
@@ -118,6 +125,21 @@ func TestSandboxTokenExpiryIsBoundedByTheSandbox(t *testing.T) {
 	token, failure = mint(t, "timed", `{"expiresAt":"`+earlier+`"}`)
 	require.Nil(t, failure)
 	assert.Equal(t, earlier, token.ExpiresAt)
+
+	// The maximum lifetime decides when it comes first: a sandbox with ten seconds of life
+	// left holds a token to those ten seconds, not to the thirty the idle TTL would allow,
+	// and an expiry past it is refused with the deadline the sandbox actually has.
+	token, failure = mint(t, "capped", `{}`)
+	require.Nil(t, failure, "minting for a capped sandbox must succeed")
+	expiry, err = time.Parse(time.RFC3339, token.ExpiresAt)
+	require.NoError(t, err, "the document states the bounded expiry: %q", token.ExpiresAt)
+	assert.False(t, expiry.After(now.Add(10*time.Second)),
+		"the token cannot outlive the sandbox's maximum lifetime: %s", token.ExpiresAt)
+	assert.True(t, expiry.After(now), "and it is still usable now: %s", token.ExpiresAt)
+
+	_, failure = mint(t, "capped", `{"expiresAt":"`+now.Add(20*time.Second).Format(time.RFC3339)+`"}`)
+	require.NotNil(t, failure, "an expiry past the maximum lifetime is refused, though the idle TTL would allow it")
+	assert.Equal(t, "token_outlives_sandbox", failure.Error.Details["reason"])
 
 	// A sandbox with no TTL bounds nothing: the token may be minted with no expiry at all.
 	token, failure = mint(t, "forever", `{}`)

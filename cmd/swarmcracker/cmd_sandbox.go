@@ -99,6 +99,7 @@ func newSandboxCreateCommand() *cobra.Command {
 		owner    string
 		allow    []string
 		ttl      time.Duration
+		maxTTL   time.Duration
 		vcpus    int
 		memoryMB int
 	)
@@ -121,7 +122,14 @@ answer), so it excludes this command's own round trip.
 
 An idle TTL (-ttl) is how long the sandbox may sit unused before the node's reaper
 takes it back. Zero means the node's configured default; a negative value means
-never.`,
+never.
+
+A maximum lifetime (-max-ttl) is how long the sandbox may exist at all, from its
+creation, whatever it does in between: using the sandbox postpones the idle TTL and
+does nothing for this one. Zero means the node's ceiling, which is no maximum on a node
+that configured none. A value longer than the node's ceiling is refused by the node —
+400 max_ttl_too_long, carrying the limit and what was asked for — rather than the
+sandbox being quietly given a shorter life than it asked for.`,
 		Example: `  swarmcracker sandbox create sandbox-base
   swarmcracker sandbox create sandbox-python@1.0.0 --ttl 30m
   swarmcracker sandbox create sandbox-node -e registry.npmjs.org:443 -e proxy.golang.org:443`,
@@ -134,6 +142,18 @@ never.`,
 			ttlSeconds := int64(ttl / time.Second)
 			if ttl < 0 {
 				ttlSeconds = -1
+			}
+			// A maximum lifetime is a duration a caller asks for; there is no "never"
+			// spelled as a negative here, because the flag's zero already means the
+			// node's ceiling. The API carries it in seconds and its zero means the
+			// ceiling, so a positive lifetime is rounded up: a caller who asked for
+			// half a second must not be taken as having asked for none.
+			if maxTTL < 0 {
+				return output.NewErrorf(output.CodeUsage, "-max-ttl must be positive (0 = the node's ceiling)")
+			}
+			maxTTLSeconds := int64(0)
+			if maxTTL > 0 {
+				maxTTLSeconds = int64((maxTTL + time.Second - 1) / time.Second)
 			}
 
 			c, err := newSandboxClientForCommand()
@@ -149,6 +169,7 @@ never.`,
 				Owner:          owner,
 				Egress:         allow,
 				IdleTTLSeconds: ttlSeconds,
+				MaxTTLSeconds:  maxTTLSeconds,
 				VCPUs:          vcpus,
 				MemoryMB:       memoryMB,
 			})
@@ -184,6 +205,12 @@ never.`,
 			} else {
 				fmt.Fprintf(out, "  idle ttl:   none (the reaper will not take it)\n")
 			}
+			if sandbox.MaxTTLSeconds > 0 {
+				fmt.Fprintf(out, "  max ttl:    %s (until %s)\n",
+					(time.Duration(sandbox.MaxTTLSeconds) * time.Second).String(), sandbox.MaxExpiresAt)
+			} else {
+				fmt.Fprintf(out, "  max ttl:    none (the node sets no maximum)\n")
+			}
 			fmt.Fprintf(out, "  ready in:   %s (node), %s (this command)\n", sandboxReadyWindow(sandbox), elapsed.Round(time.Millisecond))
 			return nil
 		},
@@ -193,6 +220,7 @@ never.`,
 	cmd.Flags().StringVar(&owner, "owner", "", "Who is asking for the sandbox (kept in the record)")
 	cmd.Flags().StringArrayVarP(&allow, "egress", "e", nil, "Allow egress to host:port (repeatable; default reaches nothing)")
 	cmd.Flags().DurationVar(&ttl, "ttl", 0, "Idle TTL after which the reaper takes the sandbox (0 = the node's default, negative = never)")
+	cmd.Flags().DurationVar(&maxTTL, "max-ttl", 0, "Longest the sandbox may live, however it is used (0 = the node's ceiling; a longer request is refused)")
 	cmd.Flags().IntVar(&vcpus, "vcpus", 0, "vCPUs (0 = the node's default)")
 	cmd.Flags().IntVar(&memoryMB, "memory", 0, "Memory in MB (0 = the node's default)")
 	return cmd

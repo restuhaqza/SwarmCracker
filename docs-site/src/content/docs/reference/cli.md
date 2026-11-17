@@ -815,7 +815,9 @@ directly, because a sandbox outlives the command that asked for it.
 
 **`sandbox create` flags:** `--id`, `--owner`, `--egress <host:port>` (repeatable;
 default reaches nothing), `--ttl <duration>` (idle TTL; `0` uses the node's default,
-negative means never), `--vcpus`, `--memory`.
+negative means never), `--max-ttl <duration>` (the longest the sandbox may live, from its
+creation and whatever it does in between; `0` uses the node's ceiling, and a longer request
+is refused with `max_ttl_too_long` rather than shortened), `--vcpus`, `--memory`.
 **`sandbox exec` flags:** `-e`/`--env` (repeatable `K=V`), `-w`/`--workdir`.
 **`sandbox cp` direction:** exactly one argument names a sandbox, as `<id>:<guest-path>`
 (relative to the guest's workspace root; a leading `/` is that root). The guest path names
@@ -827,9 +829,9 @@ and `net` reports rather than parsing a command's output, so a template needs no
 it.
 **`sandbox expose` / `unexpose` flags:** `--port` (required), and `--ttl <duration>` on
 `expose` (`0` uses the node's default, negative means never).
-**`sandbox token` flags:** `--name`, `--expires-at` (bounded by the sandbox's own idle
-TTL: an expiry past it is refused, and a token minted without one gets the sandbox's
-deadline).
+**`sandbox token` flags:** `--name`, `--expires-at` (bounded by the sandbox's own deadline
+— its idle TTL or its maximum lifetime, whichever comes first: an expiry past it is refused,
+and a token minted without one gets that deadline).
 **Persistent flag:** `--sandbox-socket <path>` (default `$SWARM_SANDBOX_SOCKET`, else
 `/var/run/swarmcracker/sandboxd.sock`).
 

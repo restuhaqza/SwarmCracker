@@ -908,3 +908,42 @@ func TestAForkRetriesTheReleaseOnceBeforeGivingUp(t *testing.T) {
 	assert.Contains(t, err.Error(), "release the writers")
 	assert.Contains(t, err.Error(), "a lost packet")
 }
+
+// TestForkAdmitsACloneAgainstTheNodesMaximumLifetime is the fork side of the lifetime
+// ceiling: a clone is a sandbox, so it is admitted like one — it carries the node's
+// ceiling on its own record as its deadline, and a fork asking for a longer life than the
+// node grants is refused before an image is staged or a clone exists.
+func TestForkAdmitsACloneAgainstTheNodesMaximumLifetime(t *testing.T) {
+	c := newCheckpointFixture(t)
+	c.manager.cfg.MaxTTL = time.Hour
+	stubQuiesce(t, nil)
+	c.readySandbox(t, "sbx-1")
+
+	_, err := c.manager.Checkpoint(context.Background(), "sbx-1", "c1")
+	require.NoError(t, err)
+
+	// A fork that asks for more life than the node grants leaves nothing behind: no
+	// clone, no staged image, and the checkpoint it would have resumed is untouched.
+	_, err = c.manager.Fork(context.Background(), ForkRequest{
+		Checkpoint: "c1", Count: 2, MaxTTL: 2 * time.Hour,
+	})
+	require.Error(t, err)
+	var tooLong *MaxTTLError
+	require.ErrorAs(t, err, &tooLong)
+	assert.Equal(t, time.Hour, tooLong.Limit)
+
+	records, _, err := c.store.List()
+	require.NoError(t, err)
+	assert.Len(t, records, 1, "the fork was refused before a clone's record existed")
+	assert.Empty(t, c.network.attached, "a refused fork attaches no namespace")
+
+	// The same fork, inside the ceiling, goes through and every clone carries the
+	// ceiling as its own deadline.
+	forks, err := c.manager.Fork(context.Background(), ForkRequest{Checkpoint: "c1", Count: 2})
+	require.NoError(t, err)
+	require.Len(t, forks, 2)
+	for _, rec := range forks {
+		assert.Equal(t, int64(3600), rec.MaxTTLSeconds)
+		assert.Equal(t, rec.Created.Add(time.Hour), rec.MaxDeadline())
+	}
+}

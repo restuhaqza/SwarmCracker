@@ -287,3 +287,58 @@ func TestReapEverySurvivesAStoreThatCannotBeRead(t *testing.T) {
 	assert.NoError(t, f.manager.ReapEvery(ctx, 2*time.Millisecond),
 		"a pass that cannot read the records is retried, and the loop still ends with its context")
 }
+
+// TestReapTakesASandboxThatOutlivedItsMaximumLifetime is the maximum lifetime's half of
+// the reaper, walked on the manager's own clock: time is moved, nothing sleeps, and the
+// sandbox is left alone until the deadline the record carries is actually reached. The
+// fixture's node has an idle TTL of none, so the limit under test is the only one that
+// can take this sandbox.
+func TestReapTakesASandboxThatOutlivedItsMaximumLifetime(t *testing.T) {
+	f := newFixtureWith(t, func(cfg *Config) {
+		cfg.MaxTTL = time.Hour
+		cfg.DefaultTTL = 0 // no idle TTL: only the maximum lifetime can take it
+	})
+	ctx := context.Background()
+
+	rec, err := f.manager.Create(ctx, CreateRequest{Template: "base", ID: "sbx-1", Owner: "ci"})
+	require.NoError(t, err)
+	require.Equal(t, int64(3600), rec.MaxTTLSeconds, "a create that asked for nothing got the node's ceiling")
+
+	// A pass before the deadline leaves it exactly where it is, and reports nothing: a
+	// sandbox the node is still holding is not a sandbox something went wrong with.
+	f.clock.Advance(59 * time.Minute)
+	reaped, err := f.manager.Reap(ctx, f.clock.Now())
+	require.NoError(t, err)
+	assert.Empty(t, reaped)
+	_, found, err := f.store.Get("sbx-1")
+	require.NoError(t, err)
+	assert.True(t, found, "a sandbox inside its maximum lifetime stays")
+
+	// At the deadline it is taken back, and the entry says which limit took it: the one
+	// the reaper's report exists to distinguish.
+	f.clock.Advance(time.Minute)
+	reaped, err = f.manager.Reap(ctx, f.clock.Now())
+	require.NoError(t, err)
+	require.Len(t, reaped, 1)
+	assert.Equal(t, "sbx-1", reaped[0].ID)
+	assert.Equal(t, ReapLimitMax, reaped[0].Limit, "the maximum lifetime is the limit that took it, not the idle TTL")
+	assert.NoError(t, reaped[0].Err)
+	assert.True(t, reaped[0].Freed.Record)
+
+	_, found, err = f.store.Get("sbx-1")
+	require.NoError(t, err)
+	assert.False(t, found, "the sandbox and its record are gone")
+}
+
+// TestReapReportsTheIdleLimitForAnIdleSandbox pins the other half of Reaped.Limit: the
+// ordinary idle reap is reported as an idle reap, so a caller reading the report can tell
+// the two limits apart rather than guessing from the age.
+func TestReapReportsTheIdleLimitForAnIdleSandbox(t *testing.T) {
+	f := newFixture(t)
+	require.NoError(t, f.store.Put(idleSandbox(f, "sbx-1")))
+
+	reaped, err := f.manager.Reap(context.Background(), f.now)
+	require.NoError(t, err)
+	require.Len(t, reaped, 1)
+	assert.Equal(t, ReapLimitIdle, reaped[0].Limit)
+}
