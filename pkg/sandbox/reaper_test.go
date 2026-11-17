@@ -342,3 +342,30 @@ func TestReapReportsTheIdleLimitForAnIdleSandbox(t *testing.T) {
 	require.Len(t, reaped, 1)
 	assert.Equal(t, ReapLimitIdle, reaped[0].Limit)
 }
+
+// TestNoCeilingReallyMeansNoMaximumLifetime is the other half of the ceiling: a node that
+// configured none really has none. Zero is the one value in this node's configuration that
+// means "unlimited", so it is pinned rather than assumed — a sandbox on such a node is
+// still there after a thousand hours, and the reaper that would have taken it at a ceiling
+// takes nothing, which is what a create that asked for no maximum must be able to rely on.
+func TestNoCeilingReallyMeansNoMaximumLifetime(t *testing.T) {
+	f := newFixture(t)
+	require.Zero(t, f.manager.cfg.MaxTTL, "this node configured no ceiling")
+	ctx := context.Background()
+
+	rec, err := f.manager.Create(ctx, CreateRequest{Template: "base", ID: "sbx-1"})
+	require.NoError(t, err)
+	assert.Zero(t, rec.MaxTTLSeconds, "no ceiling is no maximum, not a maximum of zero")
+	assert.True(t, rec.MaxDeadline().IsZero(), "and there is no deadline to report")
+
+	// The fixture's node has no default idle TTL either, so the only limit that could
+	// take this sandbox is the maximum lifetime under test.
+	f.clock.Advance(1000 * time.Hour)
+	reaped, err := f.manager.Reap(ctx, f.clock.Now())
+	require.NoError(t, err)
+	assert.Empty(t, reaped, "a sandbox with no maximum lifetime is not reaped for its age")
+
+	_, found, err := f.store.Get("sbx-1")
+	require.NoError(t, err)
+	assert.True(t, found, "the sandbox is still the node's")
+}

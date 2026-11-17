@@ -420,6 +420,14 @@ A fork is a sandbox like any other: each clone carries the node's ceiling as its
 deadline. A negative `--max-ttl` on `sandboxd` stops it at start rather than being read as
 "no maximum", the same way every other limit in the daemon's configuration is refused.
 
+`0` — no ceiling at all — is the one place `sandboxd` reads a limit's zero as "unlimited", and
+it is a deliberate departure from the quota flags, where zero means a built-in default. A
+default ceiling would start expiring sandboxes that were created before the flag was ever
+set, which is a worse surprise than a flag an operator has to fill in. Because it is silent
+otherwise, `sandboxd` logs a warning at start when it has no ceiling ("no sandbox on this node
+has a maximum lifetime"), so a node that means to bound its sandboxes can treat that line as
+a to-do rather than discovering the omission from a sandbox that outlived its welcome.
+
 ## Tokens scoped to one sandbox
 
 `sandbox exec` is a shell inside a guest, so a credential that can exec in one sandbox

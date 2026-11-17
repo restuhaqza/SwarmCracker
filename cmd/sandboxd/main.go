@@ -118,7 +118,7 @@ func appFlags() []cli.Flag {
 		&cli.IntFlag{Name: "memory", Value: defaultMemoryMB, Usage: "Default memory (MB) per sandbox"},
 		&cli.DurationFlag{Name: "reap-interval", Value: defaultReapEvery, Usage: "How often idle sandboxes are looked for"},
 		&cli.DurationFlag{Name: "default-ttl", Value: 0, Usage: "Idle TTL applied to a sandbox created without one (0 = never reap)"},
-		&cli.DurationFlag{Name: "max-ttl", Value: 0, Usage: "Longest a sandbox may live, whatever it does in between (0 = no maximum; a create that asks for more is refused)"},
+		&cli.DurationFlag{Name: "max-ttl", Value: 0, Usage: "Longest a sandbox may live, whatever it does in between (0 = no maximum lifetime, the only spelling of 'unlimited' in this daemon; a create that asks for a longer life than this is refused)"},
 		&cli.IntFlag{Name: "quota-max-per-owner", Value: sandbox.DefaultMaxSandboxesPerOwner, Usage: "How many sandboxes one owner may hold at once (0 = the built-in default); the next create for that owner answers 429 quota_exceeded"},
 		&cli.IntFlag{Name: "quota-memory-mb", Value: sandbox.DefaultNodeMemoryMB, Usage: "Guest memory (MB) this node admits for sandboxes together (0 = the built-in default)"},
 		&cli.IntFlag{Name: "quota-disk-mb", Value: sandbox.DefaultNodeDiskMB, Usage: "Disk (MB) this node admits for sandbox disks together (0 = the built-in default)"},
@@ -204,8 +204,18 @@ func run(ctx *cli.Context) error {
 		Str("state_dir", ctx.String("state-dir")).
 		Str("golden_dir", ctx.String("golden-dir")).
 		Dur("reap_interval", ctx.Duration("reap-interval")).
+		Dur("max_ttl", ctx.Duration("max-ttl")).
 		Dur("preview_ttl", ctx.Duration("preview-ttl")).
 		Msg("sandboxd is serving the sandbox control plane")
+
+	// An unset ceiling is the one place this daemon reads a flag's zero as "unlimited",
+	// which is a deliberate departure from the quota flags (a default ceiling would start
+	// expiring sandboxes created before the flag was ever set). It is deliberate, not
+	// silent: an operator who meant to bound how long sandboxes on this node may live has
+	// to see that nothing does, rather than inferring it from a flag they forgot.
+	if ctx.Duration("max-ttl") == 0 {
+		log.Warn().Msg("--max-ttl is 0: no sandbox on this node has a maximum lifetime, so only an idle TTL or a removal ends one (set --max-ttl to bound it)")
+	}
 
 	// The listeners and the reaper run until the signal context ends. The reaper runs
 	// here, in the one process allowed to write sandbox records, so its decision and
