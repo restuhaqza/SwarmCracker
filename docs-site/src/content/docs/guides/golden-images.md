@@ -112,6 +112,18 @@ recipe digest includes a builder revision (`golden.BuilderRevision`), so
 rather than reusing an old artifact; templates already in a store can only be
 fixed by rebuilding them.
 
+That revision is the mechanism for the *pipeline*, not for the agent binary. The
+recipe digest is over the recipe, and the recipe does not contain the agent — the
+builder embeds it from `pkg/image/binaries`. So a change to `pkg/agent` alone
+leaves the digest unchanged, and before this check a plain `template build` found
+the artifact up to date, reused it, and reported success while the template kept
+its old agent. The manifest now records the embedded agent's SHA-256
+(`spec.agent.digest`), and a build **refuses** such a reuse with
+`template_agent_stale` — naming both agents — rather than reusing it or silently
+rebuilding over an artifact somebody may still need. Build a new version, or pass
+`--force` to replace this one. A template that recorded no digest predates the
+field and is refused the same way.
+
 ## 1. Problem statement
 
 Today SwarmCracker turns **one OCI image into one microVM that runs exactly one

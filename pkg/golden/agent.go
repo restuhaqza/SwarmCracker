@@ -37,6 +37,19 @@ type AgentPin struct {
 	// template to (CheckAgentPin): a template whose agent was never asked has no
 	// caps here and is refused rather than assumed to have them.
 	Caps []string `yaml:"caps,omitempty" json:"agentCaps,omitempty"`
+	// Digest is the SHA-256 of the guest agent binary this template was built
+	// with, hex-encoded. Protocol and version describe what that agent answers;
+	// this says which bytes it is.
+	//
+	// It exists because the recipe digest cannot: that digest is over the recipe,
+	// which does not contain the agent binary (the builder embeds it from
+	// pkg/image/binaries). Without this, a `template build` after a change to
+	// pkg/agent found the recipe unchanged, reused the artifact and handed back a
+	// template whose agent predates the code — silently, with no marker. The
+	// build now refuses that reuse (StaleAgentError) rather than rebuilding.
+	//
+	// It is empty for a template built before the field existed.
+	Digest string `yaml:"digest,omitempty" json:"agentDigest,omitempty"`
 }
 
 // Supports reports whether the pinned agent advertised op.

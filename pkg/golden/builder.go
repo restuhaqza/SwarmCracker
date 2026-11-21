@@ -2,6 +2,8 @@ package golden
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -150,7 +152,11 @@ func (b *Builder) Build(ctx context.Context, r *Recipe) (*Result, error) {
 	metadataPath := filepath.Join(b.opts.OutputDir, base+".json")
 
 	if !b.opts.Force {
-		if res, ok := b.reuse(artifactPath, metadataPath, digest, nodePin); ok {
+		res, ok, err := b.reuse(artifactPath, metadataPath, digest, nodePin)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
 			log.Info().
 				Str("artifact", artifactPath).
 				Msg("Golden image is up to date, reusing")
@@ -210,6 +216,10 @@ func (b *Builder) Build(ctx context.Context, r *Recipe) (*Result, error) {
 		_ = os.Remove(artifactPath)
 		return nil, err
 	}
+	// Which agent is in the image, so a later build over this unchanged recipe can
+	// tell whether it may reuse the artifact (CheckAgentDigest). The probe above
+	// says the agent answers; this says which bytes it is.
+	agentPin.Digest = AgentDigest()
 
 	info, err := os.Stat(artifactPath)
 	if err != nil {
@@ -370,14 +380,28 @@ func (b *Builder) populate(ctx context.Context, r *Recipe, rootfsDir string) err
 // The pin must match too: a template built on other host software is not this
 // node's template, and handing it back because its recipe is unchanged would
 // record a template the node cannot use. Rebuilding is the answer, not reuse.
-func (b *Builder) reuse(artifactPath, metadataPath, digest string, pin checkpoint.Pin) (*Result, bool) {
-	info, err := os.Stat(artifactPath)
-	if err != nil || info.Size() == 0 {
-		return nil, false
+//
+// The agent must match for the same reason, and that one is not a rebuild: the
+// recipe digest cannot see the agent binary, so an unchanged recipe over a
+// changed pkg/agent is exactly the case this returns an error for. Handing the
+// artifact back would record a template whose agent predates this tree while
+// everything about the build said it succeeded; rebuilding it here would replace
+// a template somebody may be holding on purpose. The caller decides instead, with
+// a message that says what changed (AgentStaleError).
+func (b *Builder) reuse(artifactPath, metadataPath, digest string, pin checkpoint.Pin) (*Result, bool, error) {
+	md, ok := reusable(artifactPath, metadataPath, digest, pin)
+	if !ok {
+		return nil, false, nil
 	}
-	md, err := ReadMetadata(metadataPath)
-	if err != nil || md.RecipeDigest != digest || md.Pin != pin {
-		return nil, false
+	info, err := os.Stat(artifactPath)
+	if err != nil {
+		return nil, false, fmt.Errorf("golden: stat artifact %s: %w", artifactPath, err)
+	}
+	// Only reached when the artifact is otherwise reusable: a template whose
+	// recipe or host pin differs is rebuilt, and its agent is replaced by that
+	// build anyway.
+	if err := CheckAgentDigest(md.Ref(), md.Agent.Digest, AgentDigest()); err != nil {
+		return nil, false, err
 	}
 	return &Result{
 		Name:         md.Name,
@@ -388,7 +412,54 @@ func (b *Builder) reuse(artifactPath, metadataPath, digest string, pin checkpoin
 		SizeBytes:    info.Size(),
 		SHA256:       md.SHA256,
 		Skipped:      true,
-	}, true
+	}, true, nil
+}
+
+// reusable returns the manifest of an artifact that is a candidate for reuse at
+// all: it is there, non-empty, and its manifest records this recipe and this
+// host's pin.
+//
+// It answers a question rather than returning an error, and that is the point:
+// "not there" and "built from another recipe" mean *build it*, not *fail*, and a
+// caller cannot tell those from a real read error if all three arrive as one
+// error value. Anything that does fail a build is returned from reuse.
+func reusable(artifactPath, metadataPath, digest string, pin checkpoint.Pin) (*ArtifactMetadata, bool) {
+	info, err := os.Stat(artifactPath)
+	if err != nil || info.Size() == 0 {
+		return nil, false
+	}
+	md, err := ReadMetadata(metadataPath)
+	if err != nil {
+		return nil, false
+	}
+	if md.RecipeDigest != digest || md.Pin != pin {
+		return nil, false
+	}
+	return md, true
+}
+
+// AgentDigest returns the SHA-256 of the guest agent binary this tree embeds,
+// hex-encoded: the identity an AgentPin records so a later build can tell whether
+// the template it would reuse carries this agent or an older one.
+func AgentDigest() string {
+	sum := sha256.Sum256(image.AgentBinary())
+	return hex.EncodeToString(sum[:])
+}
+
+// CheckAgentDigest reports whether a template built with recorded can be reused
+// by a build carrying want, and is what makes the reuse decision below honest:
+// the recipe digest cannot say this, because the recipe does not contain the
+// agent binary.
+//
+// A template that recorded no digest predates the field. It cannot be shown to
+// carry this agent, so it is refused too — the same treatment an unpinned
+// template gets, for the same reason: reusing it would hand back an unknown agent
+// and call it current.
+func CheckAgentDigest(name, recorded, want string) error {
+	if recorded == want {
+		return nil
+	}
+	return &AgentStaleError{Template: name, Recorded: recorded, Want: want}
 }
 
 // ReadMetadata, writeMetadataAtomic and fileSHA256 live in manifest.go, with the

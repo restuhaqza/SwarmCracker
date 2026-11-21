@@ -68,8 +68,11 @@ Two things make that easy to get wrong on a host that already holds one:
 
 - `template build` **reuses** an artifact whose recipe digest and host pin match, and the
   recipe digest does not include the guest agent binary. A plain `template build
-  recipes/sandbox-base.yaml` on a host that already has `sandbox-base@1.0.0` prints
-  `Reused sandbox-base@1.0.0 (up to date)` and keeps the stale agent.
+  recipes/sandbox-base.yaml` on a host that already has `sandbox-base@1.0.0` keeps the
+  stale agent. (It now refuses instead of reusing it — `template_agent_stale`, naming the
+  agent the template carries and the one this tree has — because a reuse that reported
+  success was the silent half of this. The new-version build below is still the way to get
+  a fresh template without touching an older one.)
 - `--force` does rebuild, but it overwrites the artifact at the same path, and the older
   template is exactly what criterion `3b` needs.
 

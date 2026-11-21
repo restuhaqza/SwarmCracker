@@ -328,3 +328,97 @@ func TestRecipe_Validate_RequiresAWholeHostPin(t *testing.T) {
 		})
 	}
 }
+
+// --- the embedded agent's identity in reuse ---
+
+// TestBuilder_RefusesToReuseATemplateWithAnOlderAgent is the case the recipe
+// digest cannot see: the recipe is unchanged, the host pin still matches, and
+// only the guest agent differs — which is exactly what a `template build` after a
+// change to pkg/agent looks like. Reusing it would hand back a template whose
+// agent predates the tree while the build reported success.
+//
+// The refusal is the point, so it must not be a rebuild: an artifact somebody is
+// holding on purpose (the acceptance run's older-template criterion) must survive
+// a build it was not meant for.
+func TestBuilder_RefusesToReuseATemplateWithAnOlderAgent(t *testing.T) {
+	h := newHarness(t, false)
+	r := mustRecipe(t, validRecipeYAML)
+
+	first, err := h.builder.Build(context.Background(), r)
+	require.NoError(t, err)
+	require.False(t, first.Skipped)
+
+	// Rewrite the manifest as a template built by a different agent would carry
+	// it: same recipe, same pin, another agent. Its artifact stays on disk.
+	md, err := ReadMetadata(first.MetadataPath)
+	require.NoError(t, err)
+	stale := strings.Repeat("0", 64)
+	md.Agent.Digest = stale
+	require.NoError(t, writeMetadataAtomic(first.MetadataPath, *md))
+
+	_, err = h.builder.Build(context.Background(), r)
+	require.Error(t, err, "a template built by another agent must not be handed back as current")
+
+	var staleErr *AgentStaleError
+	require.ErrorAs(t, err, &staleErr)
+	assert.Equal(t, CodeTemplateAgentStale, staleErr.Code())
+	assert.Equal(t, stale, staleErr.Recorded, "the message names the agent the template carries")
+	assert.Equal(t, AgentDigest(), staleErr.Want, "and the one this tree carries")
+	assert.Contains(t, err.Error(), "template_agent_stale")
+
+	// Refused, not rebuilt: the artifact is still there, untouched.
+	assert.FileExists(t, first.ArtifactPath, "a build it was not meant for must not replace the artifact")
+	after, err := ReadMetadata(first.MetadataPath)
+	require.NoError(t, err)
+	assert.Equal(t, stale, after.Agent.Digest, "and must not rewrite its manifest either")
+}
+
+// TestBuilder_RefusesATemplateWithNoRecordedAgentDigest proves the fail-closed
+// half: a template built before the digest was recorded cannot be shown to carry
+// this agent, so it is refused rather than assumed current. That is the treatment
+// an unpinned template already gets, for the same reason.
+func TestBuilder_RefusesATemplateWithNoRecordedAgentDigest(t *testing.T) {
+	h := newHarness(t, false)
+	r := mustRecipe(t, validRecipeYAML)
+
+	first, err := h.builder.Build(context.Background(), r)
+	require.NoError(t, err)
+
+	md, err := ReadMetadata(first.MetadataPath)
+	require.NoError(t, err)
+	md.Agent.Digest = ""
+	require.NoError(t, writeMetadataAtomic(first.MetadataPath, *md))
+
+	_, err = h.builder.Build(context.Background(), r)
+	require.Error(t, err)
+
+	var staleErr *AgentStaleError
+	require.ErrorAs(t, err, &staleErr)
+	assert.Empty(t, staleErr.Recorded)
+	assert.Contains(t, err.Error(), "before this was recorded")
+}
+
+// TestBuilder_ForceStillRebuildsAStaleAgent proves the operator's way out is the
+// one the message names: --force replaces the artifact, so a host that really
+// means to refresh this version can.
+func TestBuilder_ForceStillRebuildsAStaleAgent(t *testing.T) {
+	h := newHarness(t, false)
+	r := mustRecipe(t, validRecipeYAML)
+
+	first, err := h.builder.Build(context.Background(), r)
+	require.NoError(t, err)
+
+	md, err := ReadMetadata(first.MetadataPath)
+	require.NoError(t, err)
+	md.Agent.Digest = strings.Repeat("0", 64)
+	require.NoError(t, writeMetadataAtomic(first.MetadataPath, *md))
+
+	forced := newHarnessIn(t, h.outDir, true)
+	res, err := forced.builder.Build(context.Background(), r)
+	require.NoError(t, err)
+	assert.False(t, res.Skipped, "--force rebuilds rather than refusing")
+
+	after, err := ReadMetadata(res.MetadataPath)
+	require.NoError(t, err)
+	assert.Equal(t, AgentDigest(), after.Agent.Digest, "and the rebuilt template carries this tree's agent")
+}
