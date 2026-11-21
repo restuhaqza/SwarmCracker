@@ -29,17 +29,26 @@ tree and removes nothing of anybody else's. Set `SWARMCRACKER_TEST_KEEP=1` to ke
 tree for inspection; the daemon's log is `<scratch>/sandboxd.log`.
 
 Set `SWARMCRACKER_TEST_EVIDENCE=<dir>` to have the run append one line per criterion to
-`<dir>/criteria.tsv` — that file is what the workflow uploads.
+`<dir>/criteria.tsv` — that file is what the workflow uploads, and it is what a run is read
+from: one line per criterion, ending in `PASS`, `FAIL`, or `NOT EVALUATED` with the reason.
+
+Every criterion runs on its own, creates what it needs, and is recorded whatever it decides:
+a red criterion does not stop the ones after it, and a panic inside one is that criterion's
+failure rather than the end of the run. That is not a nicety — the first run on the real host
+lost seven criteria to one failed assertion, and reported it as one failure.
+
+The run fails if any criterion failed **or** could not be evaluated: an unmeasured criterion
+is not a criterion that held.
 
 ## What it needs
 
 - Linux, root, `/dev/kvm`, `firecracker`, `jailer`, `ip`, `nft`, `lsns`, `ss`.
 - A sealed template this host can boot, in the template store.
-- A template whose userspace has, at minimum, `/bin/sh`, `busybox` (for the guest-side
-  HTTP server the preview criterion serves) and one of `getent`, `nslookup` or `curl`
-  (for the DNS half of the egress criterion). The reference `sandbox-base` recipe has all
-  of them; a template that lacks one makes the run fail with that reason rather than
-  passing a criterion it did not measure.
+- A template whose userspace has, at minimum, `/bin/sh`, `nc` (the preview criterion's
+  guest-side server is `nc` answering one request at a time — the reference template ships
+  busybox without the `httpd` applet) and one of `getent`, `nslookup` or `curl` (for the
+  DNS half of the egress criterion). A template that lacks one makes that criterion fail
+  with the reason rather than passing by measuring nothing.
 
 ## What it does not do
 

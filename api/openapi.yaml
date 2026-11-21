@@ -2675,10 +2675,20 @@ paths:
         X-Swarmcracker-File-Kind repeating which in either case. A path that is
         neither — a symbolic link, a device, a socket — is 400 invalid_request with
         details.reason "unsupported_file_kind": a link is never followed, because
-        following one would copy something other than what the caller named. The path
-        is the guest's own: it is relative to the workspace root the guest agent
-        confines every file operation to, and the node passes it through rather than
-        rewriting it. A sandbox that is not ready (created, failed or stopped) is 409
+        following one would copy something other than what the caller named. A template
+        whose guest agent predates the rooted capability is 501 with details.reason
+        "template_capability_missing" and details.capability "rooted": the confinement
+        is a field the older agent ignores, so the node refuses the copy rather than
+        writing outside the workspace. The path
+        is the guest path, and the guest confines it: a path is relative to the
+        sandbox's workspace root (/workspace in the shipped templates), a leading "/"
+        is that root, and one that would leave it — an absolute name, a ".." that
+        climbs out, or a link pointing outside — is 400 invalid with
+        details.reason "unsafe_path". Nothing is prepended, by the node or by the
+        guest: "workspace/app.log" is /workspace/workspace/app.log, not
+        /workspace/app.log. The node passes the path through rather than rewriting it,
+        so a copy out and a copy in of the same path describe the same file. A sandbox
+        that is not ready (created, failed or stopped) is 409
         conflict. Nothing is buffered, so a tree of any size costs a chunk of memory
         rather than its own size; a copy that fails after the response has started
         cannot become a typed document — the status and the media type are already on
@@ -2695,7 +2705,8 @@ paths:
           required: true
           schema: { type: string }
           description: >
-            The guest path to read, relative to the guest's file root.
+            The guest path to read, relative to the sandbox's workspace root; a
+            leading "/" is that root, and a path that leaves it is refused.
       responses:
         "200":
           description: >
@@ -2751,14 +2762,21 @@ paths:
         built before it answers 501 with details.reason
         "template_capability_missing" and details.capability "untar", and — because a
         single file does not need untar — the same template still takes a file through
-        application/octet-stream. Any other media type, including the v1 document
+        application/octet-stream. A template whose agent predates the rooted capability
+        is 501 with details.capability "rooted" for either media type: the confinement
+        this route promises is a field that agent ignores, so neither a file nor a tree is
+        written to it. Any other media type, including the v1 document
         type, is 415 unsupported_media_type. The body is streamed to the guest's own
         framing and never buffered, so a workspace of any size costs a chunk of
         memory; the bound on what may be written is the guest's, not a node-level cap,
         because a workspace copy is expected to be large and the guest is the side
-        that runs out of disk. The answer reports what the guest wrote — bytes,
-        entries and entries it refused — rather than what was sent, and the attempt is
-        audited as sandbox.files.
+        that runs out of disk. The path is confined to the sandbox's workspace exactly
+        as the read's is — an absolute name, a ".." that climbs out, or a link pointing
+        outside is 400 "unsafe_path" — which is what keeps a sandbox-scoped
+        sandboxes:files credential a way into one workspace rather than into the
+        guest's own files. The answer reports what the guest wrote — bytes, entries and
+        entries it refused — rather than what was sent, and the attempt is audited as
+        sandbox.files.
       parameters:
         - name: id
           in: path
@@ -2770,8 +2788,10 @@ paths:
           required: true
           schema: { type: string }
           description: >
-            The guest path to write: a file (application/octet-stream) or the
-            directory an archive must stay inside (application/x-tar).
+            The guest path to write, relative to the sandbox's workspace root: a file
+            (application/octet-stream) or the directory an archive must stay inside
+            (application/x-tar). A leading "/" is that root, and a path that leaves it
+            is refused.
         - name: mode
           in: query
           required: false

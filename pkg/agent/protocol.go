@@ -95,6 +95,22 @@ const (
 	// into it — is refused per call with unsupported_op rather than making every
 	// installed template unusable until it is rebuilt.
 	CapUntar = "untar"
+	// CapRooted is the promise that put and get enforce Request.Rooted: a path they are
+	// given with that flag set stays inside the guest's file root, and one that would
+	// leave it is refused with unsafe_path.
+	//
+	// Without this marker a host cannot tell an agent that confines a rooted request from
+	// one that predates the field and silently ignores it — the older agent would write
+	// the path exactly as given, which is the hole rooted transfers exist to close. So it
+	// is a capability of its own, advertised only by an agent that enforces it, and a
+	// host refuses a rooted transfer to anything else before sending a byte.
+	//
+	// Like untar it is optional and deliberately kept out of golden.RequiredAgentCaps: a
+	// template whose agent predates it still runs, still execs, and still serves the
+	// unrooted plane (`vm cp` and the task file routes), and only a sandbox copy that
+	// needs confinement is refused — per call, naming the capability, rather than making
+	// every installed template unusable until it is rebuilt.
+	CapRooted = "rooted"
 )
 
 // capabilities is the closed set of operations this agent build implements. It
@@ -103,7 +119,7 @@ const (
 // would fail after the host committed to it.
 var capabilities = []string{
 	CapHello, CapExec, CapPut, CapGet, CapMetrics, CapPrepare,
-	CapInfo, CapNet, CapStat, CapList, CapTar, CapUntar, CapActivity, CapQuiesce,
+	CapInfo, CapNet, CapStat, CapList, CapTar, CapUntar, CapRooted, CapActivity, CapQuiesce,
 }
 
 // Capabilities returns the operations this agent build advertises. The result is
@@ -245,7 +261,18 @@ type Request struct {
 	Env        []string `json:"env,omitempty"`
 	WorkDir    string   `json:"workdir,omitempty"`
 	Path       string   `json:"path,omitempty"`
-	Mode       uint32   `json:"mode,omitempty"`
+	// Rooted says Path is relative to the guest's file root (WorkspaceRoot) and must
+	// stay inside it. It is how the sandbox plane asks for a confined put or get: a
+	// sandbox's file operations reach one workspace, and a credential scoped to it
+	// must not be a way to read or write the guest's own files.
+	//
+	// It is a field rather than the only behaviour because `vm cp` and the task file
+	// routes are the older plane: they name absolute guest paths ("/etc/app/app.conf")
+	// and have no scoped credential in front of them. A request that does not set
+	// Rooted keeps that meaning, so this is additive for the plane that already exists
+	// and fail-closed for the plane that has a token in front of it.
+	Rooted bool   `json:"rooted,omitempty"`
+	Mode   uint32 `json:"mode,omitempty"`
 	// Token is the per-boot credential the node provisioned into this guest's
 	// rootfs. It is carried only by hello; a guest agent with a token configured
 	// closes the connection without a frame when it is missing or wrong.

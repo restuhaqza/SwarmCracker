@@ -211,17 +211,26 @@ for a failed sandbox, the reason it failed.
 ## Files, status and the console
 
 ```bash
-sudo swarmcracker sandbox cp d22a0d18ff5f:workspace/app.log ./app.log   # out
-sudo swarmcracker sandbox cp ./repo d22a0d18ff5f:workspace/repo          # in
+sudo swarmcracker sandbox cp d22a0d18ff5f:app.log ./app.log   # out
+sudo swarmcracker sandbox cp ./repo d22a0d18ff5f:repo         # in
 swarmcracker sandbox status d22a0d18ff5f
 swarmcracker sandbox logs d22a0d18ff5f | tail -20
 ```
 
 Exactly one of `cp`'s two arguments names a sandbox, as `<id>:<guest-path>`. The guest
 path is relative to the sandbox's **workspace root** (`/workspace` in the shipped
-templates), which is the only directory its guest agent will read or write — a leading
-`/` is that root — and it names what is created or read: `cp ./repo <id>:workspace/repo`
-writes the tree at `/workspace/repo`, and `cp <id>:workspace/repo ./repo` reads it back.
+templates), which is the only directory its guest agent will read or write, and a leading
+`/` is that root and nothing else — so `<id>:repo` and `<id>:/repo` are the same path, and
+`cp ./repo <id>:repo` writes the tree at `/workspace/repo`, while `cp <id>:repo ./repo`
+reads it back.
+
+**Nothing is prepended, by the node or by the guest.** `<id>:workspace/repo` is
+`/workspace/workspace/repo`, not `/workspace/repo`: the path is taken as written, which is
+what makes a copy out and a copy in of the same path name the same file. A path that
+would leave the workspace — an absolute name that is not the root, a `..` that climbs
+out, or a symbolic link pointing outside — is refused with `unsafe_path` rather than
+followed, for a read and a write alike. That is what keeps a token scoped to one sandbox
+a way into *that* workspace and not into the guest's own files.
 
 A **file** and a **directory** both work in both directions. Neither is buffered: a tree
 is a tar archive streamed through a pipe, so a repository-sized (or gigabyte-sized)
@@ -238,6 +247,23 @@ the tree is refused, naming the capability it lacks:
 {"error": {"code": "not_implemented",
   "details": {"reason": "template_capability_missing", "capability": "untar"}}}
 ```
+
+**Every `sandbox cp` needs the template's agent to speak `rooted`**, and that one is
+checked before a single byte moves. The confinement a copy relies on is a field on the
+request, and an agent built before it would unmarshal the field and ignore it — writing
+the path exactly as given, which is the hole confinement exists to close. So the node
+refuses a copy to such a template rather than trusting it:
+
+```json
+{"error": {"code": "not_implemented",
+  "details": {"reason": "template_capability_missing", "capability": "rooted"}}}
+```
+
+The sandbox is not broken — `exec`, `status`, `logs` and an unconfined `vm cp` all still
+reach it — but `sandbox cp` is refused until the template is rebuilt from its recipe with
+the current agent. That is the same rule `untar` follows, and the same reason it is per
+call rather than at create: an installed template keeps working for everything it did
+before.
 
 An archive arriving from a sandbox is **untrusted input**, even when the sandbox is yours.
 The node's guest-side extraction and this machine's own extraction hold the same rules: an

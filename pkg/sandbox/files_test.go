@@ -40,26 +40,26 @@ func readyWithFake(t *testing.T, f *fixture, g *fakeGuest) Record {
 func TestDescribeFileReportsTheShapeOfAPath(t *testing.T) {
 	f := newFixture(t)
 	g := newFakeGuest(t, map[string]string{
-		"workspace/main.go":    "package main\n",
-		"workspace/src/lib.go": "package src\n",
+		"main.go":    "package main\n",
+		"src/lib.go": "package src\n",
 	})
 	rec := readyWithFake(t, f, g)
 
-	file, err := f.manager.DescribeFile(context.Background(), rec.ID, "workspace/main.go")
+	file, err := f.manager.DescribeFile(context.Background(), rec.ID, "main.go")
 	require.NoError(t, err)
 	assert.Equal(t, FileKindFile, file.Kind)
 	assert.Equal(t, "file", file.Entry.Type)
 	assert.Equal(t, int64(len("package main\n")), file.Entry.Size)
 
-	dir, err := f.manager.DescribeFile(context.Background(), rec.ID, "workspace/src")
+	dir, err := f.manager.DescribeFile(context.Background(), rec.ID, "src")
 	require.NoError(t, err)
 	assert.Equal(t, FileKindDir, dir.Kind)
 	assert.Equal(t, "dir", dir.Entry.Type)
 
 	// A symlink is reported as itself, with no attempt to resolve it: the caller is told
 	// what the path is, and a copy of it is refused below.
-	require.NoError(t, os.Symlink("main.go", filepath.Join(g.root, "workspace", "link.go")))
-	link, err := f.manager.DescribeFile(context.Background(), rec.ID, "workspace/link.go")
+	require.NoError(t, os.Symlink("main.go", filepath.Join(g.root, "link.go")))
+	link, err := f.manager.DescribeFile(context.Background(), rec.ID, "link.go")
 	require.NoError(t, err)
 	assert.Equal(t, FileKindOther, link.Kind, "a link is not a file to copy")
 	assert.Equal(t, "symlink", link.Entry.Type)
@@ -71,8 +71,8 @@ func TestDescribeFileReportsTheShapeOfAPath(t *testing.T) {
 func TestSendFileStreamsAFileAndADirectory(t *testing.T) {
 	f := newFixture(t)
 	g := newFakeGuest(t, map[string]string{
-		"workspace/readme.md":  "hello from the workspace\n",
-		"workspace/src/lib.go": "package src\n",
+		"readme.md":  "hello from the workspace\n",
+		"src/lib.go": "package src\n",
 	})
 	rec := readyWithFake(t, f, g)
 	ctx := context.Background()
@@ -80,20 +80,20 @@ func TestSendFileStreamsAFileAndADirectory(t *testing.T) {
 	f.clock.Advance(30 * time.Second)
 
 	var file bytes.Buffer
-	summary, err := f.manager.SendFile(ctx, rec.ID, "workspace/readme.md", FileKindFile, &file)
+	summary, err := f.manager.SendFile(ctx, rec.ID, "readme.md", FileKindFile, &file)
 	require.NoError(t, err)
 	assert.Equal(t, "hello from the workspace\n", file.String())
 	assert.Zero(t, summary.Entries, "a file is not an archive")
 
 	var archive bytes.Buffer
-	summary, err = f.manager.SendFile(ctx, rec.ID, "workspace/src", FileKindDir, &archive)
+	summary, err = f.manager.SendFile(ctx, rec.ID, "src", FileKindDir, &archive)
 	require.NoError(t, err)
 	assert.Equal(t, 2, summary.Entries, "the archive carries the directory itself and what is in it")
 
 	names, contents := readArchive(t, archive.Bytes())
-	assert.Equal(t, []string{"workspace/src/", "workspace/src/lib.go"}, names,
+	assert.Equal(t, []string{"src/", "src/lib.go"}, names,
 		"names are relative to the file root, so extracting the archive lands the same tree")
-	assert.Equal(t, "package src\n", contents["workspace/src/lib.go"])
+	assert.Equal(t, "package src\n", contents["src/lib.go"])
 
 	assert.Equal(t, []string{"get", "tar"}, g.served(),
 		"a file is streamed with get and a directory with tar")
@@ -110,11 +110,11 @@ func TestSendFileStreamsAFileAndADirectory(t *testing.T) {
 // guest is not asked at all.
 func TestSendFileRefusesAnEntryThatIsNeither(t *testing.T) {
 	f := newFixture(t)
-	g := newFakeGuest(t, map[string]string{"workspace/file": "x"})
+	g := newFakeGuest(t, map[string]string{"file": "x"})
 	rec := readyWithFake(t, f, g)
 
 	var out bytes.Buffer
-	_, err := f.manager.SendFile(context.Background(), rec.ID, "workspace/link", FileKindOther, &out)
+	_, err := f.manager.SendFile(context.Background(), rec.ID, "link", FileKindOther, &out)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInvalid)
 	assert.Empty(t, g.served(), "nothing was asked of the guest")
@@ -128,11 +128,11 @@ func TestPutFileReportsTheBytesTheGuestReceived(t *testing.T) {
 	rec := readyWithFake(t, f, g)
 
 	body := strings.Repeat("payload-", 4096)
-	written, err := f.manager.PutFile(context.Background(), rec.ID, "workspace/input.txt", 0o644, strings.NewReader(body))
+	written, err := f.manager.PutFile(context.Background(), rec.ID, "input.txt", 0o644, strings.NewReader(body))
 	require.NoError(t, err)
 
 	assert.Equal(t, int64(len(body)), written)
-	assert.Equal(t, body, g.read(t, "workspace/input.txt"))
+	assert.Equal(t, body, g.read(t, "input.txt"))
 	assert.Equal(t, []string{"put"}, g.served())
 }
 
@@ -144,17 +144,17 @@ func TestExtractTreeWritesAnArchiveIntoTheWorkspace(t *testing.T) {
 	rec := readyWithFake(t, f, g)
 
 	archive := buildArchive(t, map[string]string{
-		"workspace/README.md":   "readme\n",
-		"workspace/pkg/main.go": "package pkg\n",
+		"repo/README.md":   "readme\n",
+		"repo/pkg/main.go": "package pkg\n",
 	})
 
-	summary, err := f.manager.ExtractTree(context.Background(), rec.ID, "workspace", bytes.NewReader(archive))
+	summary, err := f.manager.ExtractTree(context.Background(), rec.ID, "repo", bytes.NewReader(archive))
 	require.NoError(t, err)
 
 	assert.Equal(t, 2, summary.Entries)
 	assert.Equal(t, int64(len("readme\n")+len("package pkg\n")), summary.Bytes)
-	assert.Equal(t, "readme\n", g.read(t, "workspace/README.md"))
-	assert.Equal(t, "package pkg\n", g.read(t, "workspace/pkg/main.go"))
+	assert.Equal(t, "readme\n", g.read(t, "repo/README.md"))
+	assert.Equal(t, "package pkg\n", g.read(t, "repo/pkg/main.go"))
 	assert.Equal(t, []string{"untar"}, g.served())
 }
 
@@ -166,9 +166,9 @@ func TestExtractTreeRefusesAnArchiveThatNamesAnotherPath(t *testing.T) {
 	rec := readyWithFake(t, f, g)
 
 	archive := buildArchive(t, map[string]string{"elsewhere/escape.txt": "nope\n"})
-	_, err := f.manager.ExtractTree(context.Background(), rec.ID, "workspace", bytes.NewReader(archive))
+	_, err := f.manager.ExtractTree(context.Background(), rec.ID, "repo", bytes.NewReader(archive))
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "not inside workspace")
+	assert.Contains(t, err.Error(), "not inside repo")
 
 	_, statErr := os.Stat(filepath.Join(g.root, "elsewhere"))
 	assert.ErrorIs(t, statErr, os.ErrNotExist, "nothing was written")
@@ -183,8 +183,8 @@ func TestExtractTreeReportsATemplateWithoutUntarAsAMissingCapability(t *testing.
 	g.withoutCap(agent.CapUntar)
 	rec := readyWithFake(t, f, g)
 
-	archive := buildArchive(t, map[string]string{"workspace/file.txt": "content\n"})
-	_, err := f.manager.ExtractTree(context.Background(), rec.ID, "workspace", bytes.NewReader(archive))
+	archive := buildArchive(t, map[string]string{"file.txt": "content\n"})
+	_, err := f.manager.ExtractTree(context.Background(), rec.ID, ".", bytes.NewReader(archive))
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrMissingCapability)
 	assert.Contains(t, err.Error(), agent.CapUntar)
@@ -202,7 +202,7 @@ func TestExtractTreeReportsATemplateWithoutUntarAsAMissingCapability(t *testing.
 
 	// The same template still receives a single file, which is the fallback the capability
 	// decision keeps: a file arrives through put whatever the agent supports.
-	written, err := f.manager.PutFile(context.Background(), rec.ID, "workspace/file.txt", 0o644, strings.NewReader("content\n"))
+	written, err := f.manager.PutFile(context.Background(), rec.ID, "file.txt", 0o644, strings.NewReader("content\n"))
 	require.NoError(t, err)
 	assert.Equal(t, int64(len("content\n")), written)
 }
@@ -347,7 +347,7 @@ func TestStreamingATreeRoundTripsAtScale(t *testing.T) {
 	generated := make(chan streamFixture, 1)
 	failed := make(chan error, 1)
 	go func() {
-		fixture, err := generateTree(writer, "workspace", files, size, maxChunkBytes)
+		fixture, err := generateTree(writer, "tree", files, size, maxChunkBytes)
 		if err != nil {
 			_ = writer.CloseWithError(err)
 			failed <- err
@@ -361,7 +361,7 @@ func TestStreamingATreeRoundTripsAtScale(t *testing.T) {
 	}()
 
 	start := time.Now()
-	summary, err := f.manager.ExtractTree(ctx, rec.ID, "workspace", reader)
+	summary, err := f.manager.ExtractTree(ctx, rec.ID, "tree", reader)
 	received := time.Since(start)
 	require.NoError(t, err)
 
@@ -541,9 +541,69 @@ func TestPutFileReportsAGuestThatCannotBeReached(t *testing.T) {
 	g.withoutCap(agent.CapPut)
 	rec := readyWithFake(t, f, g)
 
-	_, err := f.manager.PutFile(context.Background(), rec.ID, "workspace/x", 0o644, strings.NewReader("x"))
+	_, err := f.manager.PutFile(context.Background(), rec.ID, "x", 0o644, strings.NewReader("x"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), rec.ID)
-	assert.Contains(t, err.Error(), "workspace/x")
+	assert.Contains(t, err.Error(), "x")
 	assert.Empty(t, g.served())
+}
+
+// TestRootedCopyReportsATemplateWithoutTheCapabilityAsAMissingCapability is why the rooted
+// capability exists at all.
+//
+// Request.Rooted is a field an older agent unmarshals and ignores: put and get are
+// capabilities it already advertises, so without a marker the host would send a rooted
+// transfer to an agent that writes the path exactly as given — the hole confinement
+// closes. The test is therefore not about an error being returned; it is about nothing
+// being written.
+func TestRootedCopyReportsATemplateWithoutTheCapabilityAsAMissingCapability(t *testing.T) {
+	f := newFixture(t)
+	g := newFakeGuest(t, nil)
+	g.withoutCap(agent.CapRooted)
+	rec := readyWithFake(t, f, g)
+
+	// A put: refused, named as the capability it is, and nothing landed.
+	_, err := f.manager.PutFile(context.Background(), rec.ID, "escape.txt", 0o644, strings.NewReader("payload"))
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrMissingCapability)
+	var missing *MissingCapabilityError
+	require.ErrorAs(t, err, &missing)
+	assert.Equal(t, agent.CapRooted, missing.Capability, "the refusal names the capability")
+	assert.Equal(t, rec.ID, missing.Sandbox)
+	assert.Empty(t, g.served(), "the guest was never asked: the refusal is on the client, before a frame")
+
+	// A get: the same, so a template that predates the field cannot be read through it
+	// either. The path is not even resolved by the guest.
+	var out bytes.Buffer
+	_, err = f.manager.SendFile(context.Background(), rec.ID, "existing.txt", FileKindFile, &out)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrMissingCapability)
+	require.ErrorAs(t, err, &missing)
+	assert.Equal(t, agent.CapRooted, missing.Capability)
+	assert.Zero(t, out.Len(), "nothing was read")
+
+	// Nothing was written anywhere in the guest, which is the assertion that matters: an
+	// agent that ignored the flag would have written this file.
+	_, statErr := os.Stat(filepath.Join(g.root, "escape.txt"))
+	assert.True(t, os.IsNotExist(statErr), "a refused rooted copy writes nothing")
+
+	// And the unrooted plane is untouched: the same template still serves a copy through
+	// the task plane, which is what keeps `vm cp` working on an installed template.
+	assert.True(t, g.advertises(agent.CapPut), "the guest still advertises put")
+}
+
+// TestRootedCopyIsAllowedWhenTheGuestAdvertisesIt is the other side: the marker is not a
+// blanket refusal, and a guest that has it takes the transfer and confines it.
+func TestRootedCopyIsAllowedWhenTheGuestAdvertisesIt(t *testing.T) {
+	f := newFixture(t)
+	g := newFakeGuest(t, nil)
+	rec := readyWithFake(t, f, g)
+
+	require.True(t, g.advertises(agent.CapRooted), "the fake guest speaks the current capabilities")
+
+	written, err := f.manager.PutFile(context.Background(), rec.ID, "nested/written.txt", 0o644, strings.NewReader("payload"))
+	require.NoError(t, err)
+	assert.Equal(t, int64(len("payload")), written)
+	assert.Equal(t, "payload", g.read(t, "nested/written.txt"), "it landed inside the root")
+	assert.Equal(t, []string{"put"}, g.served())
 }

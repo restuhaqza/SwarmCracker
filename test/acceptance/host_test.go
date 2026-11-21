@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -208,4 +209,79 @@ func copyTemplateWithoutAgent(t *testing.T, fromDir, toDir, name string) {
 	source, err := os.ReadFile(filepath.Join(fromDir, artifact))
 	require.NoError(t, err, "reading the artifact %s", artifact)
 	require.NoError(t, os.WriteFile(filepath.Join(toDir, artifact), source, 0o644))
+}
+
+// hostFootprint is what the node holds of this run's kind: namespaces named after a
+// sandbox, listeners of a preview, and VMM processes. It is taken before and after so a
+// leftover of this run is distinguishable from a leftover of somebody else's.
+type footprint struct {
+	namespaces []string
+	listeners  []string
+	vms        []string
+}
+
+func hostFootprint(t *testing.T) footprint {
+	t.Helper()
+	var f footprint
+	out := hostCommand(t, "sandbox namespaces", "/bin/sh", "-c",
+		"ip netns list 2>/dev/null | awk '{print $1}' | grep '^sbx-' || true")
+	f.namespaces = strings.Fields(out)
+	f.listeners = previewListeners(t)
+	f.vms = sandboxVMMs(t)
+	return f
+}
+
+// beyond is what appears in f that was not in before, as readable lines.
+func (f footprint) beyond(before footprint) []string {
+	var out []string
+	for _, line := range []struct {
+		what string
+		now  []string
+		was  []string
+	}{
+		{"namespace", f.namespaces, before.namespaces},
+		{"preview listener", f.listeners, before.listeners},
+		{"VMM process", f.vms, before.vms},
+	} {
+		seen := map[string]bool{}
+		for _, item := range line.was {
+			seen[item] = true
+		}
+		for _, item := range line.now {
+			if !seen[item] {
+				out = append(out, fmt.Sprintf("%s %s", line.what, item))
+			}
+		}
+	}
+	return out
+}
+
+// httpGet fetches a URL and returns its status and body. It is used for the preview's
+// two answers, which is why it does not follow a redirect: the status is the evidence.
+func httpGet(t *testing.T, url string) (int, string) {
+	t.Helper()
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	resp, err := client.Get(url)
+	if err != nil {
+		// A refused connection is a status of zero: after a removal, "nothing is
+		// listening" is the answer rather than a test failure.
+		t.Logf("GET %s: %v", url, err)
+		return 0, err.Error()
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var body strings.Builder
+	buf := make([]byte, 32<<10)
+	for {
+		n, readErr := resp.Body.Read(buf)
+		body.Write(buf[:n])
+		if readErr != nil || body.Len() > 32<<10 {
+			break
+		}
+	}
+	return resp.StatusCode, body.String()
 }
