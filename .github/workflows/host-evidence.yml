@@ -1,0 +1,200 @@
+name: Host evidence (KVM lab)
+
+# The one path that proves what a runner cannot: the MVP's acceptance criteria on a real
+# KVM host — one node, one operator, the whole cycle (create, exec, cp, expose,
+# checkpoint, fork, rm) and the security rules around it.
+#
+# It is manual on purpose. It dispatches over SSH into the lab host, which is single,
+# stateful and shared: a run must be a decision, not something every pull request
+# triggers. The alternative — a self-hosted runner labelled with the host — was rejected
+# because it turns every push into a queue on one machine and gives the workflow the
+# host's own credentials rather than a scoped SSH key.
+#
+# A pull request may ask for it with the `host-evidence` label. That leg is opt-in and
+# never required for a merge: a lab outage must not be able to block one.
+#
+# What this workflow must never do:
+#   - skip green when the host is unreachable. A missing host is a red run that says so.
+#   - claim anything about a host state it did not check. The run counts its own
+#     leftovers before and after and fails on a difference.
+#   - trust a host key it did not pin, or print a secret.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref to run (default: the branch this was dispatched from)"
+        required: false
+        type: string
+      template:
+        description: "Template to boot on the host"
+        required: false
+        default: "sandbox-base"
+        type: string
+      keep_scratch:
+        description: "Keep the run's scratch tree on the host for inspection"
+        required: false
+        default: false
+        type: boolean
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  # One run at a time on the one host. Queued runs wait rather than interleave: a
+  # second run's footprint would be the first's leftovers.
+  group: host-evidence
+  cancel-in-progress: false
+
+jobs:
+  evidence:
+    # A labelled pull request runs it; anything else must be a dispatch. Any other label
+    # is not this workflow's business.
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' && github.event.label.name == 'host-evidence')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Refuse when the host is not configured
+        env:
+          KVM_HOST: ${{ secrets.KVM_HOST }}
+          KVM_HOST_USER: ${{ secrets.KVM_HOST_USER }}
+          KVM_SSH_KEY: ${{ secrets.KVM_SSH_KEY }}
+          KVM_HOST_KEY: ${{ secrets.KVM_HOST_KEY }}
+        run: |
+          set -euo pipefail
+          missing=()
+          [ -n "${KVM_HOST:-}" ] || missing+=(KVM_HOST)
+          [ -n "${KVM_HOST_USER:-}" ] || missing+=(KVM_HOST_USER)
+          [ -n "${KVM_SSH_KEY:-}" ] || missing+=(KVM_SSH_KEY)
+          [ -n "${KVM_HOST_KEY:-}" ] || missing+=(KVM_HOST_KEY)
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::The host evidence run cannot start: these repository secrets are not set: ${missing[*]}"
+            echo "Set them in Settings → Secrets and variables → Actions:"
+            echo "  KVM_HOST      the lab host's hostname or address"
+            echo "  KVM_HOST_USER the login user (it needs sudo for KVM, netns and the jailer)"
+            echo "  KVM_SSH_KEY   the private key for that user, newline-preserved"
+            echo "  KVM_HOST_KEY  the host's public key line, for a pinned known_hosts"
+            exit 1
+          fi
+
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+
+      - name: Write the SSH key and the pinned host key
+        id: ssh
+        env:
+          KVM_SSH_KEY: ${{ secrets.KVM_SSH_KEY }}
+          KVM_HOST_KEY: ${{ secrets.KVM_HOST_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          key="${RUNNER_TEMP}/kvm_host_key"
+          printf '%s\n' "${KVM_SSH_KEY}" > "${key}"
+          chmod 600 "${key}"
+          # The host key is pinned from the secret, never learned: StrictHostKeyChecking
+          # with an explicit known_hosts file means a changed host key is a hard failure
+          # rather than a prompt nobody sees. `accept-new` would quietly trust the first
+          # key offered, which is exactly the footgun this avoids.
+          known_hosts="${RUNNER_TEMP}/known_hosts"
+          printf '%s\n' "${KVM_HOST_KEY}" > "${known_hosts}"
+          echo "key=${key}" >> "$GITHUB_OUTPUT"
+          echo "known_hosts=${known_hosts}" >> "$GITHUB_OUTPUT"
+
+      - name: Probes the host before dispatching
+        env:
+          KVM_HOST: ${{ secrets.KVM_HOST }}
+          KVM_HOST_USER: ${{ secrets.KVM_HOST_USER }}
+          SSH_KEY: ${{ steps.ssh.outputs.key }}
+          KNOWN_HOSTS: ${{ steps.ssh.outputs.known_hosts }}
+        run: |
+          set -euo pipefail
+          ssh_opts=(-i "${SSH_KEY}" -o "UserKnownHostsFile=${KNOWN_HOSTS}" -o StrictHostKeyChecking=yes
+            -o BatchMode=yes -o ConnectTimeout=20)
+          if ! out=$(ssh "${ssh_opts[@]}" "${KVM_HOST_USER}@${KVM_HOST}" 'uname -srm; test -e /dev/kvm && echo kvm-present || echo kvm-MISSING' 2>&1); then
+            echo "::error::The lab host is unreachable over SSH: ${out}"
+            echo "A missing host is a failed run, not a skipped one: the evidence this workflow exists for did not happen."
+            exit 1
+          fi
+          printf '%s\n' "${out}"
+          grep -q 'kvm-present' <<<"${out}" || {
+            echo "::error::The lab host has no /dev/kvm: it cannot run the evidence this workflow exists for."
+            exit 1
+          }
+
+      - name: Run the MVP acceptance on the host
+        env:
+          KVM_HOST: ${{ secrets.KVM_HOST }}
+          KVM_HOST_USER: ${{ secrets.KVM_HOST_USER }}
+          SSH_KEY: ${{ steps.ssh.outputs.key }}
+          KNOWN_HOSTS: ${{ steps.ssh.outputs.known_hosts }}
+          TEMPLATE: ${{ inputs.template || 'sandbox-base' }}
+          KEEP_SCRATCH: ${{ inputs.keep_scratch && '1' || '0' }}
+        run: |
+          set -euo pipefail
+
+          # The source is streamed to the host rather than cloned there: the lab host's
+          # `gh` is not authorised for this repository, so a checkout on it would be a
+          # second, differently-broken way to get the tree. A tar over the SSH stdin also
+          # means the run exercises exactly this commit.
+          remote_dir="/var/tmp/host-evidence-$(git rev-parse --short HEAD)-$$"
+          ssh_opts=(-i "${SSH_KEY}" -o "UserKnownHostsFile=${KNOWN_HOSTS}" -o StrictHostKeyChecking=yes
+            -o BatchMode=yes -o ConnectTimeout=20)
+
+          ssh "${ssh_opts[@]}" "${KVM_HOST_USER}@${KVM_HOST}" "rm -rf '${remote_dir}' && mkdir -p '${remote_dir}'"
+          # .git is excluded because it is the largest part of the tree and nothing in the
+          # run reads it; the evidence records the commit instead. sdk, docs-site and
+          # website are excluded for the same reason.
+          tar --exclude=.git --exclude=sdk --exclude=docs-site --exclude=website \
+            --exclude=build --exclude=.amp -cf - . |
+            ssh "${ssh_opts[@]}" "${KVM_HOST_USER}@${KVM_HOST}" "tar -xf - -C '${remote_dir}'"
+
+          # The build is the login user's, so it reuses that user's module cache and
+          # network; the run is sudo's, because a jailed sandbox needs root for the
+          # chroot, the chown to its VMM's uid, /dev/net/tun and the network namespace.
+          # `sudo -n` fails rather than prompting: a prompt in CI is a hang.
+          set +e
+          ssh "${ssh_opts[@]}" "${KVM_HOST_USER}@${KVM_HOST}" \
+            "cd '${remote_dir}' && mkdir -p build evidence && \
+               GOFLAGS=-buildvcs=false go build -o build/sandboxd ./cmd/sandboxd && \
+               GOFLAGS=-buildvcs=false go build -o build/swarmcracker ./cmd/swarmcracker && \
+               sudo -n env \
+                 SANDBOXD_BIN='${remote_dir}/build/sandboxd' \
+                 SWARMCRACKER_BIN='${remote_dir}/build/swarmcracker' \
+                 SWARMCRACKER_TEST_TEMPLATE='${TEMPLATE}' \
+                 SWARMCRACKER_TEST_KEEP='${KEEP_SCRATCH}' \
+                 ACCEPTANCE_EVIDENCE_DIR='${remote_dir}/evidence' \
+                 bash '${remote_dir}/scripts/host-evidence/run.sh' --skip-build" 2>&1 | tee "${RUNNER_TEMP}/host.log"
+          status=${PIPESTATUS[0]}
+          set -e
+
+          # The evidence comes back whether or not the run passed: a failed run's log is
+          # the thing worth reading.
+          mkdir -p "${RUNNER_TEMP}/evidence"
+          scp -q -i "${SSH_KEY}" -o "UserKnownHostsFile=${KNOWN_HOSTS}" -o StrictHostKeyChecking=yes \
+            -r "${KVM_HOST_USER}@${KVM_HOST}:${remote_dir}/evidence/." "${RUNNER_TEMP}/evidence/" || true
+
+          if [ "${KEEP_SCRATCH}" != "1" ]; then
+            ssh "${ssh_opts[@]}" "${KVM_HOST_USER}@${KVM_HOST}" "sudo -n rm -rf '${remote_dir}'" || true
+          fi
+          exit "${status}"
+
+      - name: Upload the evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: host-evidence-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/evidence/**
+            ${{ runner.temp }}/host.log
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Remove the SSH key
+        if: always()
+        run: rm -f "${RUNNER_TEMP}/kvm_host_key" "${RUNNER_TEMP}/known_hosts"
