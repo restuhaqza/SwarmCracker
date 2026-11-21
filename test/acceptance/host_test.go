@@ -73,12 +73,20 @@ func previewListeners(t *testing.T) []string {
 	return strings.Fields(out)
 }
 
+// firecrackerProcesses is the host command that lists Firecracker VMMs by the name of
+// their executable, not by their argument line.
+//
+// `pgrep -af firecracker` also matches the shell that runs it, so a footprint taken that
+// way reports the measuring process as a leftover VMM — which is what the second run's
+// run-clean failed on. The executable's own name cannot match the shell unless the shell is
+// Firecracker.
+const firecrackerProcesses = `ps -eo pid=,args= | awk '{ n=split($2, p, "/"); if (p[n] == "firecracker") print }'`
+
 // sandboxVMMs are the Firecracker processes on the node whose argument line names a
 // sandbox: a VMM is a process, so the kernel is what says it is gone.
 func sandboxVMMs(t *testing.T) []string {
 	t.Helper()
-	out := hostCommand(t, "firecracker processes", "/bin/sh", "-c",
-		"pgrep -af firecracker 2>/dev/null | grep '/sbx-' || true")
+	out := hostCommand(t, "firecracker processes", "/bin/sh", "-c", firecrackerProcesses+" | grep '/sbx-' || true")
 	var ids []string
 	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
 		if line == "" {
