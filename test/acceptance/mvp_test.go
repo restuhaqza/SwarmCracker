@@ -206,7 +206,9 @@ fi`
 		// is what "writes do not leak" means in both directions.
 		h.mustExec(primary.ID, "/bin/sh", "-c", "echo after-the-image > /workspace/after.txt")
 
-		out := h.mustRun("sandbox", "fork", "--checkpoint", "mvp-image", "--count", "2", "-o", "name")
+		// `fork --checkpoint` still takes the navigation argument the command requires;
+		// with --checkpoint it is not read, so the parent's id is what names it.
+		out := h.mustRun("sandbox", "fork", primary.ID, "--checkpoint", "mvp-image", "--count", "2", "-o", "name")
 		clones := strings.Fields(out)
 		require.Len(t, clones, 2, "fork --count 2 creates two clones, got %q", out)
 
