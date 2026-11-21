@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/restuhaqza/swarmcracker/pkg/agent"
+	"github.com/restuhaqza/swarmcracker/pkg/api/v1"
 	"github.com/restuhaqza/swarmcracker/pkg/golden"
 )
 
@@ -389,14 +390,15 @@ fi`
 		theirs := h.create("mvp-bound-b")
 		t.Cleanup(func() { h.remove(theirs.ID) })
 
+		// The document is the API's own type, decoded: a local copy of its fields is how
+		// this criterion came to read "secret" while the wire says "token", which made a
+		// correct refusal look correct for the wrong reason (an empty bearer token is
+		// refused too).
 		minted := h.mustRun("sandbox", "token", mine.ID, "--name", "acceptance-9", "-o", "json")
-		var token struct {
-			Secret  string   `json:"secret"`
-			Sandbox string   `json:"sandbox"`
-			Scopes  []string `json:"scopes"`
-		}
+		var token v1.SandboxToken
 		require.NoError(t, json.Unmarshal([]byte(minted), &token), minted)
 		require.Equal(t, mine.ID, token.Sandbox)
+		require.NotEmpty(t, token.Secret, "the minted document carries its bearer secret:\n%s", minted)
 		t.Logf("minted %v for %s", token.Scopes, token.Sandbox)
 
 		// The token reaches the CLI through a file, never an argument.

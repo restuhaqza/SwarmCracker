@@ -146,3 +146,37 @@ func TestNewCheckpointListAlwaysCarriesAnArray(t *testing.T) {
 	assert.Equal(t, KindCheckpointList, doc.Kind)
 	assert.Equal(t, SchemaVersion, doc.SchemaVersion)
 }
+
+// TestSandboxTokenSecretIsNamedTokenOnTheWire pins the one field whose name is not the
+// one a caller would guess.
+//
+// The Go field is Secret, the JSON field is "token", and a harness that decoded the
+// document with the Go name read an empty bearer token — which the API then refused for
+// being empty. The refusal was correct and the reason was not: a criterion meant to prove
+// a sandbox-scoped token cannot leave its sandbox was passing on a token that never
+// existed. Nothing caught it because the existing assertions name the Go field, which
+// cannot drift from itself.
+//
+// So this reads the encoded document, and the key is the contract: renaming the tag
+// without renaming the field (or the reverse) fails here rather than in a host run.
+func TestSandboxTokenSecretIsNamedTokenOnTheWire(t *testing.T) {
+	token := NewSandboxToken("tok_1", "sandbox sbx1", "sbx1", "sc_secret", "", []string{"sandboxes:read"})
+
+	data, err := json.Marshal(token)
+	require.NoError(t, err)
+
+	var doc map[string]any
+	require.NoError(t, json.Unmarshal(data, &doc))
+
+	assert.Equal(t, "sc_secret", doc["token"], "the bearer secret travels under \"token\":\n%s", data)
+	assert.NotContains(t, doc, "secret", "and not under the Go field's name:\n%s", data)
+	assert.NotContains(t, doc, "Secret")
+
+	// The rest of the document a caller reads, so a rename of any of them is caught here
+	// too: the harness and the SDK both decode these keys.
+	for _, key := range []string{"schemaVersion", "kind", "id", "name", "sandbox", "scopes"} {
+		assert.Contains(t, doc, key, "the token document carries %q:\n%s", key, data)
+	}
+	// The secret is never on a read: this document exists only in its creation response.
+	assert.Equal(t, KindSandboxToken, doc["kind"])
+}
