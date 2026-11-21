@@ -404,9 +404,17 @@ fi`
 		// The token reaches the CLI through a file, never an argument.
 		tokenFile := filepath.Join(h.scratch, "sandbox-token")
 		require.NoError(t, os.WriteFile(tokenFile, []byte(token.Secret+"\n"), 0o600))
+		// The token's own flags, and the one composer that places them: a call that wants a
+		// document rather than prose adds the format here, so it lands on the CLI's side of
+		// the separator with everything else.
+		tokenFlags := []string{"--host", "https://" + h.apiAddr, "--ca", h.caFile, "--token-file", tokenFile}
 		remote := func(args ...string) (string, string, int) {
-			return h.run(withCLIFlags(args,
-				"--host", "https://"+h.apiAddr, "--ca", h.caFile, "--token-file", tokenFile)...)
+			return h.run(withCLIFlags(args, tokenFlags...)...)
+		}
+		asDocument := func(args ...string) (string, string, int) {
+			t.Helper()
+			flags := append(append([]string{}, tokenFlags...), "-o", "json")
+			return h.run(withCLIFlags(args, flags...)...)
 		}
 
 		// Its own sandbox: allowed.
@@ -415,14 +423,29 @@ fi`
 		assert.Contains(t, out, "own-sandbox")
 
 		// The three refusals are read as documents: a criterion about details.reason
-		// has to read details.
+		// has to read details. The format is requested through withCLIFlags like every
+		// other flag — appending "-o json" to a command that already ends in "--" and the
+		// guest's argv is exactly how this criterion passed on prose, three runs running.
+		// A refusal counts as observed only as a JSON error document naming its code and
+		// reason. An exit code is not that: a command that failed for an unrelated reason —
+		// a flag on the wrong side of the separator, a usage error, a subcommand that does
+		// not exist — has an exit code too, and reading it as a refusal is how this
+		// criterion passed three times on an answer it never received.
+		observedRefusals := 0
 		refusal := func(args ...string) errorDocument {
 			t.Helper()
-			out, stderr, code := remote(append(args, "-o", "json")...)
+			out, stderr, code := asDocument(args...)
+			raw := firstJSON(stderr + out)
 			require.NotZero(t, code, "this call must be refused: %v", args)
+			require.NotContains(t, stderr+out, "invalid character",
+				"the refusal is a document this test can read, not prose the CLI printed instead of one — "+
+					"a format flag on the guest's side of \"--\" does that:\n%s%s", out, stderr)
 			var doc errorDocument
-			require.NoError(t, json.Unmarshal([]byte(firstJSON(stderr+out)), &doc),
-				"the refusal is an Error document:\n%s%s", out, stderr)
+			require.NoError(t, json.Unmarshal([]byte(raw), &doc), "the refusal is an Error document:\n%s%s", out, stderr)
+			require.Equal(t, v1.KindError, doc.Kind, "and it is the error envelope, not another document:\n%s", raw)
+			require.NotEmpty(t, doc.Error.Code, "the refusal names a stable code:\n%s", raw)
+			require.NotEmpty(t, doc.Error.Details["reason"], "and a reason in details:\n%s", raw)
+			observedRefusals++
 			return doc
 		}
 
@@ -448,7 +471,11 @@ fi`
 		require.Zero(t, code, "the guest runs the argv after --: %s%s", out, stderr)
 		assert.Contains(t, strings.TrimSpace(out), "--host", "an argument after -- reaches the guest")
 
-		note(t, "own exec ok; elsewhere sandbox_selector_mismatch+%s; list sandbox_list_not_permitted; mint scope_missing+sandboxes:token", theirs.ID)
+		// The criterion's claim is that all three boundaries were observed, so it is the
+		// count that is asserted, not each call on its own honour.
+		assert.Equal(t, 3, observedRefusals, "all three refusals arrived as error documents")
+		note(t, "own exec ok; %d refusals observed as documents: elsewhere sandbox_selector_mismatch+%s, list sandbox_list_not_permitted, mint scope_missing+sandboxes:token",
+			observedRefusals, theirs.ID)
 	})
 
 	// 11 — the template this node boots reports its agent's protocol and capabilities,

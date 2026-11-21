@@ -378,8 +378,21 @@ func (h *host) stopDaemon() {
 
 // run runs the CLI and returns its stdout, stderr and exit code. Every invocation is
 // logged with the sandbox socket it used, so the log is reproducible by hand.
+//
+// It is also where the one argv mistake this package keeps making is caught. The CLI reads
+// its flags before "--"; anything after it is the guest's. A "--output json" written after
+// the separator is therefore not a format request at all — the CLI answers in prose, and
+// the criterion that meant to read a document decodes the word "error" instead. That
+// happened three times, each time from a second place in this package that built a command
+// line by hand instead of through withCLIFlags. A guard at the single execution door
+// catches the fourth regardless of which builder it came from, and says so.
 func (h *host) run(args ...string) (string, string, int) {
 	h.t.Helper()
+	if at, format := separatorThenFormat(args); at >= 0 {
+		h.t.Fatalf("the CLI's own %s flag is after \"--\" at index %d, so the guest would receive it "+
+			"and the command would answer in prose: build the command line with withCLIFlags, not by appending to it\n%v",
+			format, at, args)
+	}
 	cmd := exec.Command(h.cli, args...)
 	var out, errOut strings.Builder
 	cmd.Stdout = &out
@@ -409,9 +422,14 @@ func (h *host) mustRun(args ...string) string {
 }
 
 // runJSON runs a CLI command with -o json and decodes its document into v.
+//
+// The format goes through withCLIFlags like any other flag: a caller with a "--" in its
+// arguments would otherwise get the format on the guest's side, and the decode below would
+// read prose. host.run refuses that, but composing it right is the caller's job, and this is
+// one of the two places that composes.
 func (h *host) runJSON(v any, args ...string) {
 	h.t.Helper()
-	out := h.mustRun(append(args, "-o", "json")...)
+	out := h.mustRun(withCLIFlags(args, "-o", "json")...)
 	require.NoError(h.t, json.Unmarshal([]byte(out), v), "decoding the CLI's document:\n%s", out)
 }
 
@@ -699,18 +717,24 @@ func readTemplateManifest(t *testing.T, h *host, ref string) templateManifest {
 	return *md
 }
 
-// withCLIFlags puts the CLI's own flags before the first "--", and leaves everything after
-// it alone.
+// withCLIFlags composes a CLI command line: the command and its own flags, then "--", then
+// the guest's own argv. It is the single door for that in this package.
 //
-// This is the bug the second host run had, and it failed in the worst direction: criterion
-// 9's remote() appended --host/--ca/--token-file to a list that already ended in a
-// separator and the guest's argv, so the flags became part of the command the guest ran,
-// the CLI fell back to the local admin socket, and a call that had to be refused
-// succeeded. The refusals the criterion claims were measured against the wrong credential.
+// Three host runs lost a criterion to the alternative. Each time a second place appended
+// flags to a list that already ended in a separator, so the flag became the guest's argv,
+// the CLI fell back to its own defaults, and a call that had to be refused was answered in
+// prose by the admin socket. So: nothing in this package builds a command line by appending
+// to one, and host.run refuses a format flag that reaches it on the wrong side.
 //
-// It is one function rather than an append at each call site because that is how the two
-// got separated in the first place.
+// The output format is special-cased for the same reason. Arguments that end with "-o json"
+// were meant for the CLI however the caller appended them — reordering them to the CLI's
+// side is precisely what this function is for. Every other flag is placed as given.
 func withCLIFlags(args []string, flags ...string) []string {
+	args, format := takeOutputFormat(args)
+	if len(format) > 0 {
+		flags = append(append([]string{}, flags...), format...)
+	}
+
 	at := -1
 	for i, arg := range args {
 		if arg == "--" {
@@ -724,4 +748,38 @@ func withCLIFlags(args []string, flags ...string) []string {
 	out := append([]string{}, args[:at]...)
 	out = append(out, flags...)
 	return append(out, args[at:]...)
+}
+
+// takeOutputFormat removes a trailing "-o json"-style request from args and returns it,
+// because such a request is the CLI's however it was appended.
+func takeOutputFormat(args []string) ([]string, []string) {
+	for _, flag := range []string{"-o", "--output"} {
+		n := len(args)
+		if n >= 2 && args[n-2] == flag {
+			return append([]string{}, args[:n-2]...), args[n-2:]
+		}
+	}
+	return append([]string{}, args...), nil
+}
+
+// separatorThenFormat reports the index of a CLI format flag that sits after "--", where
+// only the guest's argv may be. It returns -1 for a command line that is composed
+// correctly.
+func separatorThenFormat(args []string) (int, string) {
+	at := -1
+	for i, arg := range args {
+		if arg == "--" {
+			at = i
+			break
+		}
+	}
+	if at < 0 {
+		return -1, ""
+	}
+	for i := at + 1; i < len(args); i++ {
+		if args[i] == "-o" || args[i] == "--output" {
+			return i, args[i]
+		}
+	}
+	return -1, ""
 }

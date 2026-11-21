@@ -210,6 +210,20 @@ func TestSandboxDocumentKeysAreTheOnesCallersRead(t *testing.T) {
 			doc:  NewSandboxRemoval("sbx1", SandboxFreed{ProcessStopped: true}),
 			keys: []string{"schemaVersion", "kind", "sandbox", "freed"},
 		},
+		{
+			// The document the harness reads a bearer credential out of, and the one whose
+			// field name it got wrong: the secret is "token" on the wire.
+			name: "SandboxToken",
+			doc:  NewSandboxToken("tok_1", "sandbox sbx1", "sbx1", "sc_secret", "", []string{"sandboxes:read"}),
+			keys: []string{"schemaVersion", "kind", "id", "name", "sandbox", "scopes", "token"},
+		},
+		{
+			// What a refused call answers with. A criterion that reads a refusal reads this,
+			// so its code and reason keys are the contract too.
+			name: "ErrorDocument",
+			doc:  NewErrorDocument(Error{Code: "forbidden", Message: "no", Details: map[string]any{"reason": "scope_missing"}}),
+			keys: []string{"schemaVersion", "kind", "error"},
+		},
 	} {
 		data, err := json.Marshal(tc.doc)
 		require.NoError(t, err)
@@ -219,8 +233,10 @@ func TestSandboxDocumentKeysAreTheOnesCallersRead(t *testing.T) {
 		for _, key := range tc.keys {
 			assert.Contains(t, doc, key, "%s must carry %q for the caller that reads it:\n%s", tc.name, key, data)
 		}
-		// The sandbox's own host layout never crosses the API.
-		for _, hostOnly := range []string{"disk", "jail", "agentTokenFile", "netns", "secret"} {
+		// The sandbox's own host layout never crosses the API, and the bearer secret only
+		// ever crosses as "token": a document carrying it under any other name is one no
+		// caller reads.
+		for _, hostOnly := range []string{"disk", "jail", "agentTokenFile", "netns", "secret", "Secret"} {
 			assert.NotContains(t, doc, hostOnly, "%s must not carry %q:\n%s", tc.name, hostOnly, data)
 		}
 	}
