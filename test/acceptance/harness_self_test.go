@@ -360,3 +360,73 @@ func TestWithCLIFlagsKeepsTheGuestsArgv(t *testing.T) {
 	got = withCLIFlags([]string{"sandbox", "ls"}, "--host", "https://127.0.0.1:1")
 	assert.Equal(t, []string{"sandbox", "ls", "--host", "https://127.0.0.1:1"}, got)
 }
+
+// TestWithCLIFlagsMovesAFormatFlagOffTheGuestsSide is the third instance of this bug, pinned
+// as a property of the composer rather than as one more call site.
+//
+// refusal() appended "-o json" to a command that already ended in "--" and the guest's argv.
+// withCLIFlags only moved the flags it was handed, so the format stayed on the guest's side,
+// the CLI answered in prose, and the criterion reported the product refusing something while
+// decoding the word "error". A composer that knows the format flag is the CLI's cannot leave
+// it there, whichever caller passes it.
+func TestWithCLIFlagsMovesAFormatFlagOffTheGuestsSide(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+		flag []string
+		want []string
+	}{
+		{
+			name: "the refusal that broke run four",
+			args: []string{"sandbox", "exec", "sbx-2", "--", "/bin/sh", "-c", "echo elsewhere", "-o", "json"},
+			want: []string{"sandbox", "exec", "sbx-2", "-o", "json", "--", "/bin/sh", "-c", "echo elsewhere"},
+		},
+		{
+			name: "a command with no separator keeps its flags together",
+			args: []string{"sandbox", "ls", "-o", "json"},
+			want: []string{"sandbox", "ls", "-o", "json"},
+		},
+		{
+			name: "the long spelling is the same request",
+			args: []string{"sandbox", "exec", "sbx-2", "--", "echo", "--output", "json"},
+			want: []string{"sandbox", "exec", "sbx-2", "--output", "json", "--", "echo"},
+		},
+	} {
+		got := withCLIFlags(tc.args)
+		assert.Equal(t, tc.want, got, "%s", tc.name)
+
+		// Whatever the caller passed, the format is before the separator and the guest's
+		// argv is after it.
+		at := indexOf(got, "--")
+		if at >= 0 {
+			assert.NotContains(t, got[at+1:], "-o", "%s: the guest does not receive the CLI's format", tc.name)
+			assert.NotContains(t, got[at+1:], "--output", "%s", tc.name)
+		}
+	}
+}
+
+// TestRunRefusesAFormatFlagOnTheGuestsSide is the door, not the builders: whatever composed
+// the command line, a format flag after "--" would answer in prose, so host.run refuses the
+// call. host.run consults exactly this function before it starts a process, and the message
+// it prints names withCLIFlags — which is why a fourth builder is found by this test rather
+// than by a fourth host run.
+func TestRunRefusesAFormatFlagOnTheGuestsSide(t *testing.T) {
+	for _, bad := range [][]string{
+		{"sandbox", "exec", "sbx-1", "--", "echo", "-o", "json"},
+		{"sandbox", "exec", "sbx-1", "-o", "json", "--", "echo", "--output"},
+	} {
+		at, flag := separatorThenFormat(bad)
+		require.GreaterOrEqual(t, at, 0, "%v carries a format flag on the wrong side", bad)
+		assert.Contains(t, []string{"-o", "--output"}, flag)
+	}
+
+	for _, good := range [][]string{
+		{"sandbox", "ls"},
+		withCLIFlags([]string{"sandbox", "exec", "sbx-1", "--", "echo"}, "-o", "json"),
+		withCLIFlags([]string{"sandbox", "exec", "sbx-1", "--", "echo", "-o", "json"}),
+	} {
+		at, _ := separatorThenFormat(good)
+		assert.Equal(t, -1, at, "%v is composed correctly", good)
+	}
+}
+
