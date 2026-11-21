@@ -725,3 +725,60 @@ func manifestLacksRooted(path string) (string, bool, error) {
 	}
 	return manifest.Name + "@" + manifest.Vert, true, nil
 }
+
+// templateManifest is the part of a template's manifest a criterion compares against the
+// guest: what the build recorded about the agent inside it.
+type templateManifest struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+	Agent   struct {
+		Protocol string   `json:"agentProtocol"`
+		Version  string   `json:"agentVersion"`
+		Caps     []string `json:"agentCaps"`
+	} `json:"agent"`
+}
+
+// readTemplateManifest reads the manifest a ref names out of the store the run boots
+// from. It is deliberately the file, not `template inspect`'s prose: a criterion that
+// compares the manifest with the guest has to compare values, and the verdict lines the
+// command prints around them contain words like "protocol" that a substring assertion
+// would match on its own.
+func readTemplateManifest(t *testing.T, h *host, ref string) templateManifest {
+	t.Helper()
+	path, err := filepath.Glob(filepath.Join(h.goldenDir, "golden-"+strings.ReplaceAll(ref, "@", "-")+".json"))
+	if err != nil || len(path) == 0 {
+		t.Fatalf("the template store %s has no manifest for %s", h.goldenDir, ref)
+	}
+	raw, err := os.ReadFile(path[0])
+	require.NoError(t, err, "reading %s", path[0])
+	var md templateManifest
+	require.NoError(t, json.Unmarshal(raw, &md), "parsing %s", path[0])
+	return md
+}
+
+// withCLIFlags puts the CLI's own flags before the first "--", and leaves everything after
+// it alone.
+//
+// This is the bug the second host run had, and it failed in the worst direction: criterion
+// 9's remote() appended --host/--ca/--token-file to a list that already ended in a
+// separator and the guest's argv, so the flags became part of the command the guest ran,
+// the CLI fell back to the local admin socket, and a call that had to be refused
+// succeeded. The refusals the criterion claims were measured against the wrong credential.
+//
+// It is one function rather than an append at each call site because that is how the two
+// got separated in the first place.
+func withCLIFlags(args []string, flags ...string) []string {
+	at := -1
+	for i, arg := range args {
+		if arg == "--" {
+			at = i
+			break
+		}
+	}
+	if at < 0 {
+		return append(append([]string{}, args...), flags...)
+	}
+	out := append([]string{}, args[:at]...)
+	out = append(out, flags...)
+	return append(out, args[at:]...)
+}

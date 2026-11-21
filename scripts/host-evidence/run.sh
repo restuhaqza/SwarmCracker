@@ -63,7 +63,11 @@ footprint() {
 		printf '## preview listeners\n'
 		ss -ltnH 2>/dev/null | awk '{print $4}' | grep '^127\.' | grep -v '^127\.0\.0\.1:' || true
 		printf '## vms\n'
-		pgrep -af firecracker 2>/dev/null | grep '/sbx-' || true
+		# By the executable's name, not the argument line: `pgrep -af firecracker` matches
+		# the shell that runs it, so this script would list its own footprint as a leftover
+		# VMM. The Go package counts the same three, and the two are compared so a run
+		# cannot report clean by looking in the wrong place.
+		ps -eo pid=,args= 2>/dev/null | awk '{ n=split($2, p, "/"); if (p[n] == "firecracker") print }' | grep '/sbx-' || true
 	} >"${out}"
 }
 
@@ -131,13 +135,16 @@ if [ ! -s "${LEDGER}" ]; then
 	exit 1
 fi
 
-PASSED=$(grep -c $'\tPASS$' "${LEDGER}" || true)
-FAILED=$(grep -c $'\tFAIL$' "${LEDGER}" || true)
-MISSING=$(grep -c $'\tNOT EVALUATED' "${LEDGER}" || true)
+# Count the ledger by its first field, which is what a verdict is. A criterion's notes
+# follow its verdict, prefixed by it ("PASS: …"), so counting by suffix would count them
+# as criteria.
+PASSED=$(awk -F'\t' '$1 != "" && $3 == "PASS"' "${LEDGER}" | wc -l)
+FAILED=$(awk -F'\t' '$1 != "" && $3 == "FAIL"' "${LEDGER}" | wc -l)
+MISSING=$(awk -F'\t' '$1 != "" && $3 ~ /^NOT EVALUATED/' "${LEDGER}" | wc -l)
 
 say "==> criteria: ${PASSED} passed, ${FAILED} failed, ${MISSING} not evaluated"
-grep $'\tFAIL$' "${LEDGER}" | while IFS= read -r line; do say "    FAILED: ${line}"; done
-grep $'\tNOT EVALUATED' "${LEDGER}" | while IFS= read -r line; do say "    NOT EVALUATED: ${line}"; done
+awk -F'\t' '$1 != "" && $3 == "FAIL"' "${LEDGER}" | while IFS= read -r line; do say "    FAILED: ${line}"; done
+awk -F'\t' '$1 != "" && $3 ~ /^NOT EVALUATED/' "${LEDGER}" | while IFS= read -r line; do say "    NOT EVALUATED: ${line}"; done
 
 if [ "${FAILED}" -ne 0 ] || [ "${MISSING}" -ne 0 ]; then
 	say "FAIL: ${FAILED} criterion/criteria failed and ${MISSING} could not be evaluated (see criteria.tsv)"

@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/restuhaqza/swarmcracker/pkg/agent"
+	"github.com/restuhaqza/swarmcracker/pkg/golden"
 )
 
 // TestMVP is the epic's MVP acceptance run on one node: one operator, one sandbox,
@@ -40,7 +41,7 @@ func TestMVP(t *testing.T) {
 	// 1 — a cold create is ready inside the window the node's own timestamps measure,
 	// and the response reports them. The warm half of the criterion is a pool, which
 	// this slice does not have, so it is not measured and not claimed.
-	criterion(t, "1-cold-create", "cold create is ready within four seconds and reports its timings", func(t *testing.T) {
+	criterion(t, h, "1-cold-create", "cold create is ready within four seconds and reports its timings", func(t *testing.T) {
 		started := time.Now()
 		rec := h.create("mvp-create")
 		elapsed := time.Since(started)
@@ -65,7 +66,7 @@ func TestMVP(t *testing.T) {
 	})
 
 	// 2 — exec returns stdout, stderr and the guest's exit code, separately.
-	criterion(t, "2-exec", "exec returns stdout, stderr and the exit code", func(t *testing.T) {
+	criterion(t, h, "2-exec", "exec returns stdout, stderr and the exit code", func(t *testing.T) {
 		rec := h.create("mvp-exec")
 		t.Cleanup(func() { h.remove(rec.ID) })
 
@@ -85,7 +86,7 @@ func TestMVP(t *testing.T) {
 	// workspace root and nothing is prepended, so "repo" is /workspace/repo and
 	// "workspace/repo" would be /workspace/workspace/repo. Both halves are asserted,
 	// because a copy that landed in the wrong one of the two would otherwise pass.
-	criterion(t, "3-cp", "cp moves a tree into the workspace and exec sees it", func(t *testing.T) {
+	criterion(t, h, "3-cp", "cp moves a tree into the workspace and exec sees it", func(t *testing.T) {
 		rec := h.create("mvp-cp")
 		t.Cleanup(func() { h.remove(rec.ID) })
 
@@ -128,7 +129,7 @@ func TestMVP(t *testing.T) {
 	// closes, reopened through a template that was never rebuilt. The assertion is not
 	// "an error came back": it is that the refused copy wrote nothing, checked in the
 	// guest.
-	criterion(t, "3b-cp-old-template", "a template older than the rooted capability refuses cp and writes nothing", func(t *testing.T) {
+	criterion(t, h, "3b-cp-old-template", "a template older than the rooted capability refuses cp and writes nothing", func(t *testing.T) {
 		// The subject is whichever older template this host actually has — named, or found
 		// in its stores — and the run records which one it used. A host with none is a
 		// finding, not a skip: the case this criterion exists for is a template nobody
@@ -180,7 +181,7 @@ func TestMVP(t *testing.T) {
 
 	// 4 — expose serves an authenticated URL, refuses it without the token, and the
 	// listener is gone once the sandbox is.
-	criterion(t, "4-expose", "expose gives an authenticated URL and dies with its sandbox", func(t *testing.T) {
+	criterion(t, h, "4-expose", "expose gives an authenticated URL and dies with its sandbox", func(t *testing.T) {
 		rec := h.create("mvp-expose")
 
 		// A server in the guest that needs no package the template lacks: busybox's
@@ -216,7 +217,7 @@ func TestMVP(t *testing.T) {
 
 	// 5 — a sandbox with egress none cannot resolve a name, reach another sandbox, the
 	// host's gateway, or the internet. Four assertions, four destinations.
-	criterion(t, "5-egress-none", "egress none cannot resolve DNS, reach a peer, the host, or the internet", func(t *testing.T) {
+	criterion(t, h, "5-egress-none", "egress none cannot resolve DNS, reach a peer, the host, or the internet", func(t *testing.T) {
 		mine := h.create("mvp-egress-a")
 		t.Cleanup(func() { h.remove(mine.ID) })
 		peer := h.create("mvp-egress-b")
@@ -276,7 +277,7 @@ fi`
 
 	// 6 — checkpoint and fork --count 2 give three independent sandboxes: distinct
 	// namespaces and addresses, and writes that do not leak in either direction.
-	criterion(t, "6-checkpoint-fork", "checkpoint plus fork of two yields three independent sandboxes", func(t *testing.T) {
+	criterion(t, h, "6-checkpoint-fork", "checkpoint plus fork of two yields three independent sandboxes", func(t *testing.T) {
 		parent := h.create("mvp-fork-parent")
 		t.Cleanup(func() { h.remove(parent.ID) })
 
@@ -308,11 +309,23 @@ fi`
 		}
 		assert.Len(t, addresses, 3, "three sandboxes, three distinct guest addresses: %v", addresses)
 
+		// Each sandbox's own namespace, found by its own name. The clones are named from
+		// their own ids, not the name this run gave the parent, so a grep on
+		// "sbx-mvp-fork" could only ever match one of the three.
 		namespaces := hostCommand(t, "the sandboxes' namespaces", "/bin/sh", "-c",
-			"ip netns list | awk '{print $1}' | grep '^sbx-mvp-fork' | sort")
-		for _, id := range all {
-			assert.Contains(t, namespaces, "sbx-"+id, "%s has its own namespace", id)
+			"ip netns list | awk '{print $1}' | sort")
+		present := map[string]bool{}
+		for _, line := range strings.Split(strings.TrimSpace(namespaces), "\n") {
+			present[strings.TrimSpace(line)] = true
 		}
+		ofThisRun := 0
+		for _, id := range all {
+			assert.True(t, present["sbx-"+id], "%s has a namespace of its own; the host lists:\n%s", id, namespaces)
+			if present["sbx-"+id] {
+				ofThisRun++
+			}
+		}
+		assert.Equal(t, 3, ofThisRun, "each of the three has a namespace of its own:\n%s", namespaces)
 
 		for _, id := range clones {
 			assert.Contains(t, h.mustExec(id, "/bin/sh", "-c", "cat /workspace/before.txt"), "before-the-image",
@@ -327,7 +340,7 @@ fi`
 	})
 
 	// 8 — rm frees every resource the record names, and the node has none of them.
-	criterion(t, "8-rm", "rm frees process, jail, netns, tap, cgroup, disk, token and record", func(t *testing.T) {
+	criterion(t, h, "8-rm", "rm frees process, jail, netns, tap, cgroup, disk, token and record", func(t *testing.T) {
 		rec := h.create("mvp-rm")
 		// A credential scoped to the sandbox exists before the removal, so "the tokens
 		// went with it" is a fact rather than an absence.
@@ -356,7 +369,7 @@ fi`
 		assert.NotContains(t, hostCommand(t, "namespaces after the removal", "/bin/sh", "-c", "ip netns list"),
 			"sbx-"+rec.ID, "the namespace is gone from the node")
 		assert.NoFileExists(t, disk, "the disk is gone")
-		assert.NotContains(t, hostCommand(t, "processes after the removal", "pgrep", "-af", "firecracker"),
+		assert.NotContains(t, hostCommand(t, "processes after the removal", "/bin/sh", "-c", firecrackerProcesses),
 			rec.ID, "no VMM of this sandbox is left")
 		assert.NotContains(t, h.mustRun("sandbox", "ls"), rec.ID, "and the node lists no such sandbox")
 
@@ -370,7 +383,7 @@ fi`
 	// would be run by the guest while the command itself fell back to the local admin
 	// socket — which is exactly how an earlier version of this test passed while
 	// proving nothing.
-	criterion(t, "9-scoped-token", "a sandbox token cannot exec elsewhere, list, or mint", func(t *testing.T) {
+	criterion(t, h, "9-scoped-token", "a sandbox token cannot exec elsewhere, list, or mint", func(t *testing.T) {
 		mine := h.create("mvp-bound-a")
 		t.Cleanup(func() { h.remove(mine.ID) })
 		theirs := h.create("mvp-bound-b")
@@ -390,9 +403,8 @@ fi`
 		tokenFile := filepath.Join(h.scratch, "sandbox-token")
 		require.NoError(t, os.WriteFile(tokenFile, []byte(token.Secret+"\n"), 0o600))
 		remote := func(args ...string) (string, string, int) {
-			full := append([]string{}, args...)
-			full = append(full, "--host", "https://"+h.apiAddr, "--ca", h.caFile, "--token-file", tokenFile)
-			return h.run(full...)
+			return h.run(withCLIFlags(args,
+				"--host", "https://"+h.apiAddr, "--ca", h.caFile, "--token-file", tokenFile)...)
 		}
 
 		// Its own sandbox: allowed.
@@ -440,16 +452,22 @@ fi`
 	// 11 — the template this node boots reports its agent's protocol and capabilities,
 	// a create's answer is the guest's own hello, and a template recording no working
 	// agent is refused by this host.
-	criterion(t, "11-template-agent", "the template's agent reports protocol and caps, and one without is refused", func(t *testing.T) {
+	criterion(t, h, "11-template-agent", "the template's agent reports protocol and caps, and one without is refused", func(t *testing.T) {
 		ref, err := h.templateRef(t)
 		require.NoError(t, err, "this run needs to know which template it boots")
 		t.Logf("the template this run boots: %s", ref)
 
 		inspected := h.mustRun("template", "inspect", ref, "--output-dir", h.goldenDir)
 		t.Logf("template inspect:\n%s", inspected)
-		assert.Contains(t, inspected, "protocol", "the manifest records the agent protocol")
-		assert.Contains(t, inspected, "caps [", "and the capabilities it advertises")
+		assert.Contains(t, inspected, "usable on this node", "this node can boot the template it is about to boot")
+		assert.Contains(t, inspected, "caps [", "and the manifest records the capabilities its agent advertised")
 		assert.Contains(t, inspected, "prepare", "including the post-restore hook, which this host requires")
+
+		// The criterion's claim is that the manifest and the guest agree, so both sides
+		// are read and compared. A substring of the prose is not that: `template inspect`
+		// prints the JSON keys too, and "protocol" appears in "agentProtocol", so a
+		// contains() would pass on a manifest that recorded nothing at all.
+		manifest := readTemplateManifest(t, h, ref)
 
 		// The create's own answer is the guest's hello, not the manifest.
 		rec := h.create("mvp-hello")
@@ -457,6 +475,32 @@ fi`
 		assert.NotEmpty(t, rec.AgentVersion, "the sandbox reports the agent version its guest answered with")
 		assert.NotEmpty(t, rec.BootID, "and this boot's identity")
 		t.Logf("the guest's hello: agent %s, boot %s", rec.AgentVersion, rec.BootID)
+
+		// What the guest says about itself, asked directly rather than through a record the
+		// node wrote: the node already resolved the template's agent when it created the
+		// sandbox, so a record that agreed with the manifest would prove nothing about the
+		// guest.
+		vsock, hostToken := sandboxMuxer(t, h, rec.ID)
+		dialContext, cancel := contextWithTimeout(10 * time.Second)
+		defer cancel()
+		client, err := agent.DialWithToken(dialContext, vsock, agent.DefaultPort, hostToken)
+		require.NoError(t, err, "dialing the guest's agent")
+		hello := client.Hello()
+		require.NoError(t, client.Close())
+		t.Logf("the guest's own hello: protocol %s, version %s, caps %v", hello.Version, hello.AgentVersion, hello.Caps)
+
+		assert.Equal(t, manifest.Agent.Protocol, hello.Version,
+			"the protocol the manifest records is the one the guest answers with")
+		assert.Equal(t, manifest.Agent.Version, hello.AgentVersion,
+			"and so is the agent version")
+		for _, cap := range golden.RequiredAgentCaps {
+			assert.Contains(t, manifest.Agent.Caps, cap,
+				"the manifest records the capability this host requires (%s)", cap)
+			assert.Contains(t, hello.Caps, cap,
+				"and the guest advertises it", cap)
+		}
+		assert.Equal(t, rec.AgentVersion, hello.AgentVersion,
+			"the create's record names the agent the guest answered with")
 
 		// The negative half: a manifest that records no agent capabilities is refused by
 		// this host rather than booted. It is the same golden.CheckAgentPin that a
@@ -478,17 +522,34 @@ fi`
 			rec.AgentVersion, rec.BootID)
 	})
 
-	// 12 — a non-root process in the guest cannot obtain the credential the agent
-	// requires, and a host dial without it is rejected.
-	criterion(t, "12-auth", "a non-root guest process cannot become root, and an unauthenticated dial is refused", func(t *testing.T) {
+	// 12 — a non-root process in the guest cannot obtain the agent's credential, and a
+	// host dial without it is rejected.
+	//
+	// Two things are measured, and the first has two halves: the sandbox's own user
+	// cannot read the credential, and the read that *should* work does work. Without the
+	// second half the criterion passes on a guest where `su` is missing or broken — a
+	// 127 says nothing about permissions — so a refusal that measured nothing would be
+	// recorded as a refusal that held.
+	criterion(t, h, "12-auth", "a non-root guest process cannot become root, and an unauthenticated dial is refused", func(t *testing.T) {
 		rec := h.create("mvp-auth")
 		t.Cleanup(func() { h.remove(rec.ID) })
 
+		// The privileged half is the control: this run's commands already run as root
+		// through the agent, so if the credential cannot be read here, nothing below is
+		// about permissions.
+		asRoot := h.mustExec(rec.ID, "/bin/sh", "-c", "cat "+agent.TokenPath)
+		assert.NotEmpty(t, strings.TrimSpace(asRoot), "root reads the credential through the agent's own exec")
+
+		// The sandbox user's attempt. `su` must exist and must run the command: its own
+		// exit code is the only thing that separates "was refused" from "never happened".
 		out, _ := h.exec(rec.ID, "/bin/sh", "-c",
 			"su -s /bin/sh sandbox -c 'cat "+agent.TokenPath+"' 2>&1; echo \"exit=$?\"")
 		t.Logf("a non-root read of the agent credential:\n%s", out)
-		assert.Contains(t, out, "exit=", "the attempt has an outcome")
-		assert.NotContains(t, out, "exit=0", "the sandbox's own user cannot read the agent credential")
+		assert.NotContains(t, out, "not found", "the guest has `su` and the sandbox user: a missing helper is not a refusal")
+		assert.Contains(t, out, "exit=1", "the sandbox user's read is refused with a permission failure")
+		assert.NotContains(t, out, "exit=0", "and it does not read the credential")
+		assert.NotContains(t, out, strings.TrimSpace(asRoot),
+			"the credential's value does not appear in the sandbox user's output")
 
 		vsock, hostToken := sandboxMuxer(t, h, rec.ID)
 		dialContext, cancel := contextWithTimeout(10 * time.Second)
@@ -510,7 +571,7 @@ fi`
 	// The host is left as the run found it, plus nothing: every sandbox this run made is
 	// gone, and so is everything it held. This is the run's own promise, not a claim
 	// that the host has no leftovers from earlier work.
-	criterion(t, "run-clean", "the run leaves nothing behind", func(t *testing.T) {
+	criterion(t, h, "run-clean", "the run leaves nothing behind", func(t *testing.T) {
 		assert.Empty(t, h.list(), "no sandbox this run created survives it")
 
 		after := hostFootprint(t)
@@ -528,9 +589,41 @@ fi`
 // be evaluated at all (a prerequisite missing) is recorded as such, in its own words;
 // one that passes is recorded PASS with its measurement. The ledger is what the run is
 // read from, so a criterion that never ran cannot be mistaken for one that held.
-func criterion(t *testing.T, id, title string, fn func(t *testing.T)) {
+//
+// Two things make that true rather than merely intended, and both were learned on a real
+// host:
+//
+//   - h.t is pointed at this criterion's own subtest, so a helper's require.* reports
+//     here. With the run's parent test in that field, a helper failure called FailNow on
+//     the parent from this goroutine and ended the whole binary: criteria after it never
+//     ran and no ledger line was written for the one that died — the run looked like one
+//     with no ledger rather than one that stopped.
+//   - the record is deferred, because FailNow ends this goroutine with runtime.Goexit and
+//     skips everything after the criterion's body. Deferred calls still run, so a
+//     criterion that dies inside a helper is recorded FAIL instead of vanishing.
+func criterion(t *testing.T, h *host, id, title string, fn func(t *testing.T)) {
 	t.Helper()
 	t.Run(id+": "+title, func(t *testing.T) {
+		h.t = t
+		// The record is deferred: a failed assertion inside a helper ends this goroutine
+		// with runtime.Goexit, and only deferred calls still run after that.
+		defer func() {
+			// A skipped criterion has not been measured, and "not measured" must not read
+			// as a pass. The ledger's vocabulary is exactly the runner's: PASS, FAIL, and
+			// NOT EVALUATED for one that could not be evaluated — the last two both fail
+			// the run.
+			status := "PASS"
+			if t.Failed() {
+				status = "FAIL"
+			} else if t.Skipped() {
+				status = "NOT EVALUATED"
+			}
+			recordStatus(t, id, status)
+			// The verdict first, then what it was measured at — each line prefixed by the
+			// verdict, so neither can be read as the other.
+			flushNotes(t, status)
+		}()
+
 		// A panic in a criterion is that criterion's failure, not the run's end. It is
 		// recovered here because the alternative — the whole binary dying — would hide
 		// every criterion after it, which is the failure mode this file exists to end.
@@ -542,24 +635,42 @@ func criterion(t *testing.T, id, title string, fn func(t *testing.T)) {
 			}()
 			fn(t)
 		}()
-
-		status := "PASS"
-		if t.Failed() {
-			status = "FAIL"
-		} else if t.Skipped() {
-			status = "SKIP"
-		}
-		recordStatus(t, id, status)
 	})
 }
 
+// notes holds each criterion's note lines until its verdict is known. They are written
+// together with the verdict, and prefixed by it, because a note written when it happens
+// can end up above a FAIL and read like the result: the second run's ledger had a
+// run-clean FAIL sitting on a note that said "no sandbox, namespace, listener or VMM of
+// this run remains". Both lines were true; only one was the verdict.
+var (
+	notesMu sync.Mutex
+	notes   = map[string][]string{}
+)
+
 // note records a measurement or fact inside a criterion that is already being recorded:
-// the pass/fail line is written by criterion, and this is what it was measured at.
+// the pass/fail line is written by criterion, and this is what it was measured at. It is
+// emitted with the verdict, prefixed by it, so a note cannot be mistaken for one.
 func note(t *testing.T, format string, args ...any) {
 	t.Helper()
 	message := fmt.Sprintf(format, args...)
 	t.Logf("[evidence] %s", message)
-	appendEvidence(t, "", message)
+	notesMu.Lock()
+	notes[t.Name()] = append(notes[t.Name()], message)
+	notesMu.Unlock()
+}
+
+// flushNotes writes a criterion's notes after its verdict, each prefixed with it, and
+// forgets them.
+func flushNotes(t *testing.T, status string) {
+	notesMu.Lock()
+	buffered := notes[t.Name()]
+	delete(notes, t.Name())
+	notesMu.Unlock()
+
+	for _, message := range buffered {
+		appendEvidence(t, "", status+": "+message)
+	}
 }
 
 // errorDocument is the CLI's JSON rendering of a failed call: one Error document on

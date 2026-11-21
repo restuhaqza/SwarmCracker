@@ -32,33 +32,69 @@ const selfChildEnv = "ACCEPTANCE_SELF_CHILD"
 // TestSelfChild is the child half. It is not run by a normal `go test` (its name is only
 // selected by the parent's -test.run), and each scenario is expected to fail.
 func TestSelfChild(t *testing.T) {
+	// The criteria in these scenarios take no sandbox, so an empty host is enough: what
+	// is being checked is the ledger and the run's control flow, and criterion repoints
+	// h.t at each subtest itself.
+	h := &host{t: t}
 	switch os.Getenv(selfChildEnv) {
 	case "continues":
 		ran := []string{}
-		criterion(t, "a-fails", "the first criterion fails", func(t *testing.T) {
+		criterion(t, h, "a-fails", "the first criterion fails", func(t *testing.T) {
 			ran = append(ran, "a")
 			t.Error("this criterion is red")
 		})
-		criterion(t, "b-passes", "the second criterion passes", func(t *testing.T) {
+		criterion(t, h, "b-passes", "the second criterion passes", func(t *testing.T) {
 			ran = append(ran, "b")
 		})
-		criterion(t, "c-fails", "the third criterion fails", func(t *testing.T) {
+		criterion(t, h, "c-fails", "the third criterion fails", func(t *testing.T) {
 			ran = append(ran, "c")
 			assert.Fail(t, "also red")
 		})
 		// Every body ran, whatever the one before it decided: this is the property, and
 		// the parent reads it from the ledger because this process is expected to fail.
-		criterion(t, "d-ran-all", "all three ran", func(t *testing.T) {
+		criterion(t, h, "d-ran-all", "all three ran", func(t *testing.T) {
 			if strings.Join(ran, ",") != "a,b,c" {
 				t.Errorf("only %v ran", ran)
 			}
 		})
 	case "panic":
-		criterion(t, "panics", "the first criterion panics", func(t *testing.T) {
+		criterion(t, h, "panics", "the first criterion panics", func(t *testing.T) {
 			panic("a nil map, or worse")
 		})
-		criterion(t, "after", "the next criterion still runs", func(t *testing.T) {
+		criterion(t, h, "after", "the next criterion still runs", func(t *testing.T) {
 			// Reaching here at all is the property; the ledger records it.
+		})
+	case "helper":
+		// The scenario the first runner hit: a criterion that dies inside a helper rather
+		// than at its own assertion. mustRun is a real helper — it asserts on the CLI's
+		// exit code through h.t — so this is the same path a criterion takes when a
+		// command it requires fails.
+		criterion(t, h, "a-helper-fails", "the first criterion fails inside a helper", func(t *testing.T) {
+			h.mustRun("definitely-not-a-subcommand")
+		})
+		criterion(t, h, "b-after-helper", "the next criterion still runs", func(t *testing.T) {
+			t.Log("reached")
+		})
+	case "helper-death":
+		// The same, one level colder: the helper fails, and the criterion is recorded
+		// FAIL rather than the process ending with no line for it.
+		criterion(t, h, "a-dies", "the criterion dies inside a helper", func(t *testing.T) {
+			require.Fail(t, "a prerequisite the criterion cannot proceed without")
+		})
+		criterion(t, h, "b-ran", "the criteria after it ran", func(t *testing.T) {
+			t.Log("reached")
+		})
+	case "notes":
+		criterion(t, h, "a-fails", "the first criterion fails after measuring", func(t *testing.T) {
+			note(t, "the first criterion measured this")
+			t.Error("this criterion is red")
+		})
+		criterion(t, h, "b-passes", "the second criterion passes after measuring", func(t *testing.T) {
+			note(t, "the second criterion measured this")
+		})
+	case "skipped":
+		criterion(t, h, "a-skipped", "a criterion that could not be evaluated", func(t *testing.T) {
+			t.Skip("a prerequisite this host does not have")
 		})
 	default:
 		t.Skip("this test only runs as a child of another")
@@ -126,16 +162,19 @@ func TestTemplateRefNamesAVersion(t *testing.T) {
 // call were written after "--", so they became the guest's argv and the command fell back
 // to the local admin socket. This pins which side of the separator a flag belongs on.
 func TestFlagBeforeDashDashIsTheCLIs(t *testing.T) {
-	// The argument list of a remote exec as criterion 9 builds it: flags first, then the
-	// separator, then the guest's own argv.
-	args := []string{"sandbox", "exec", "sbx-1", "--", "echo", "--host"}
+	// The argument list of a remote exec as criterion 9 builds it, through the same
+	// function the criterion uses: flags first, then the separator, then the guest's argv.
+	// A hand-built list here would pass while `remote()` kept appending after "--", which
+	// is what the second host run did.
+	args := withCLIFlags([]string{"sandbox", "exec", "sbx-1", "--", "echo", "--host"},
+		"--host", "https://127.0.0.1:1")
 	at := indexOf(args, "--")
 	require.Greater(t, at, 0, "the list has a separator")
 
 	assert.Equal(t, []string{"echo", "--host"}, args[at+1:],
 		"everything after the separator is the guest's, including a name the CLI also has")
-	assert.NotContains(t, args[:at], "--host",
-		"and the CLI's own flags are before it, where the CLI reads them")
+	assert.Contains(t, args[:at], "--host",
+		"and the CLI's own flag is before it, where the CLI reads it")
 }
 
 func indexOf(items []string, want string) int {
@@ -148,7 +187,9 @@ func indexOf(items []string, want string) int {
 }
 
 // runSelfChild runs one child scenario and returns the directory its ledger was written
-// to. The child is expected to fail: what is asserted is the ledger, not its exit status.
+// to. The child's exit status is deliberately not asserted on: a scenario whose criteria
+// all skip exits 0 even though its ledger says NOT EVALUATED, and that is exactly the case
+// the skip test exists to read. What a run is judged by is the ledger.
 func runSelfChild(t *testing.T, scenario string) string {
 	t.Helper()
 
@@ -156,8 +197,7 @@ func runSelfChild(t *testing.T, scenario string) string {
 	cmd := exec.Command(os.Args[0], "-test.run=^TestSelfChild$", "-test.v")
 	cmd.Env = append(os.Environ(), selfChildEnv+"="+scenario, evidenceDirEnv+"="+dir)
 	out, err := cmd.CombinedOutput()
-	require.Error(t, err, "the child scenario %q is expected to fail; its output:\n%s", scenario, out)
-	t.Logf("the child %q exited with %v, as it should; its ledger:\n%s", scenario, err, readLedger(t, dir))
+	t.Logf("the child %q exited with %v; its output:\n%s\nits ledger:\n%s", scenario, err, out, readLedger(t, dir))
 	return dir
 }
 
@@ -237,4 +277,86 @@ func TestOlderTemplatePrefersTheConfiguredName(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "stock@0.9.0", ref)
 	assert.Contains(t, source, olderTemplateEnv)
+}
+
+// TestCriterionSurvivesAFailureInAHelper is the defect the second runner found, and it is
+// the one that hides the most: a helper asserts through h.t, so with the *parent* test in
+// that field a failure called FailNow on the parent from the criterion's goroutine. The
+// binary ended where the run stood, the criteria after it never ran, and the criterion
+// that died never reached its own recordStatus — a run that stopped looked exactly like a
+// run that recorded nothing.
+func TestCriterionSurvivesAFailureInAHelper(t *testing.T) {
+	dir := runSelfChild(t, "helper")
+	ledger := readLedger(t, dir)
+
+	assert.Contains(t, ledger, "a-helper-fails\t", "the criterion that failed in a helper is recorded")
+	assert.Contains(t, ledger, "b-after-helper\t", "and the criterion after it still ran")
+	assert.Equal(t, 1, strings.Count(ledger, "\tPASS"), "the one that could run passed:\n%s", ledger)
+	assert.Equal(t, 1, strings.Count(ledger, "\tFAIL"), "and the one that died is a FAIL, not a gap:\n%s", ledger)
+}
+
+// TestCriterionRecordsItsOwnDeath pins the colder half: the line for a criterion that
+// FailNow'd inside itself is written, because the record is deferred and Goexit still runs
+// deferred calls.
+func TestCriterionRecordsItsOwnDeath(t *testing.T) {
+	dir := runSelfChild(t, "helper-death")
+	ledger := readLedger(t, dir)
+
+	assert.Contains(t, ledger, "a-dies\t", "a criterion that ended inside itself is still recorded")
+	assert.Contains(t, ledger, "b-ran\t", "and the next one ran")
+	assert.Equal(t, 1, strings.Count(ledger, "\tFAIL"), "the death is a FAIL line:\n%s", ledger)
+}
+
+// TestNotesFollowTheirVerdict pins the shape of a ledger line. A note written when it
+// happens sat above a FAIL in the second run's ledger and read like the result —
+// run-clean FAIL under a note that said nothing remained — so notes are now emitted after
+// the verdict and prefixed by it. Anything else in that column is a note, not a criterion,
+// and the runner counts criteria by the first field only.
+func TestNotesFollowTheirVerdict(t *testing.T) {
+	dir := runSelfChild(t, "notes")
+	ledger := readLedger(t, dir)
+
+	lines := strings.Split(strings.TrimSpace(ledger), "\n")
+	var verdicts, notes []string
+	for _, line := range lines {
+		fields := strings.Split(line, "\t")
+		require.Len(t, fields, 3, "every ledger line has an id, a time and a status:\n%s", ledger)
+		if fields[0] == "" {
+			notes = append(notes, fields[2])
+			continue
+		}
+		verdicts = append(verdicts, fields[2])
+	}
+
+	assert.Equal(t, []string{"FAIL", "PASS"}, verdicts, "one verdict per criterion, in order:\n%s", ledger)
+	assert.Equal(t, []string{"FAIL: the first criterion measured this", "PASS: the second criterion measured this"}, notes,
+		"each note is prefixed by the verdict it belongs to:\n%s", ledger)
+}
+
+// TestASkipIsNotAPass pins the vocabulary: a criterion that was skipped could not be
+// evaluated, and the runner treats exactly PASS, FAIL and NOT EVALUATED. A "SKIP" line
+// would be counted as neither, so a run whose every criterion skipped would read green.
+func TestASkipIsNotAPass(t *testing.T) {
+	dir := runSelfChild(t, "skipped")
+	ledger := readLedger(t, dir)
+
+	assert.Contains(t, ledger, "NOT EVALUATED", "a skipped criterion is recorded as not evaluated:\n%s", ledger)
+	assert.NotContains(t, ledger, "\tSKIP", "and never as a word the runner does not count:\n%s", ledger)
+	assert.NotContains(t, ledger, "\tPASS", "and certainly not as a pass:\n%s", ledger)
+}
+
+// TestWithCLIFlagsKeepsTheGuestsArgv is the composition criterion 9 uses, pinned: the
+// CLI reads its flags before the separator and the guest reads everything after it.
+func TestWithCLIFlagsKeepsTheGuestsArgv(t *testing.T) {
+	got := withCLIFlags([]string{"sandbox", "exec", "sbx-1", "--", "/bin/sh", "-c", "echo --host"},
+		"--host", "https://127.0.0.1:1", "--ca", "/tmp/ca", "--token-file", "/tmp/t")
+
+	assert.Equal(t, []string{"sandbox", "exec", "sbx-1",
+		"--host", "https://127.0.0.1:1", "--ca", "/tmp/ca", "--token-file", "/tmp/t",
+		"--", "/bin/sh", "-c", "echo --host"}, got,
+		"the CLI's flags go before the separator; the guest's argv stays after it")
+
+	// A call with no separator takes the flags at the end, where the CLI reads them too.
+	got = withCLIFlags([]string{"sandbox", "ls"}, "--host", "https://127.0.0.1:1")
+	assert.Equal(t, []string{"sandbox", "ls", "--host", "https://127.0.0.1:1"}, got)
 }

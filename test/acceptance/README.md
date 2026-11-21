@@ -104,13 +104,41 @@ Set `SWARMCRACKER_TEST_EVIDENCE=<dir>` to have the run append one line per crite
 `<dir>/criteria.tsv` — that file is what the workflow uploads, and it is what a run is read
 from: one line per criterion, ending in `PASS`, `FAIL`, or `NOT EVALUATED` with the reason.
 
+The verdict is the first field of a line, and it is the **only** verdict. The lines whose id
+field is empty are notes: what the criterion measured, written after its verdict and
+prefixed by it (`PASS: cold create ready in 3.1 s`). They are context, not results — a
+reading that takes a note for an outcome is reading the wrong column.
+
 Every criterion runs on its own, creates what it needs, and is recorded whatever it decides:
 a red criterion does not stop the ones after it, and a panic inside one is that criterion's
 failure rather than the end of the run. That is not a nicety — the first run on the real host
 lost seven criteria to one failed assertion, and reported it as one failure.
 
+The same holds for a failure inside a *helper* rather than at the criterion's own assertion.
+The harness's helpers assert through the criterion's own `test.T`, and the record is written
+from a deferred call, so a `require` that fails deep inside one is still that criterion's
+`FAIL` line. Both the second runner's symptoms — a binary that stopped at the first red
+criterion, and a run whose ledger was never written — come from the opposite, and each has
+a self-test that fails if it returns.
+
 The run fails if any criterion failed **or** could not be evaluated: an unmeasured criterion
 is not a criterion that held.
+
+### What a criterion does not prove
+
+Two limits are worth knowing before a ledger is read as more than it is:
+
+- **`run-clean` cannot prove the host is clean, in either direction.** It compares the host
+  before and after this run, and its VMM check is best-effort: a jailed VMM whose argument
+  line does not name the sandbox is invisible to it. What does settle the run's own
+  footprint is the external `footprint-before`/`footprint-after` pair the runner script
+  takes — a name in the "after" that was not in the "before" fails the run whatever the
+  criteria said. `run-clean` is a second look, not the authority.
+- **Criterion 8 is partly the product's own report.** The namespace, the disk, the VMM and
+  the record are checked from the host; the TAP device, the cgroup and the jail are only
+  checked as entries in the removal document `rm` returns. That document is the product
+  describing itself, so a `rm` that under-reports a resource it did not free would still
+  pass. The host-side checks are why the criterion is worth running at all.
 
 ## What it needs
 
