@@ -676,17 +676,9 @@ func flushNotes(t *testing.T, status string) {
 }
 
 // errorDocument is the CLI's JSON rendering of a failed call: one Error document on
-// stderr when the output format is json.
-type errorDocument struct {
-	SchemaVersion int    `json:"schemaVersion"`
-	Kind          string `json:"kind"`
-	Error         struct {
-		Code      string         `json:"code"`
-		Message   string         `json:"message"`
-		Details   map[string]any `json:"details,omitempty"`
-		Retryable bool           `json:"retryable,omitempty"`
-	} `json:"error"`
-}
+// stderr when the output format is json. It is the API's type, for the reason the
+// documents in harness_test.go are: a copy of a document's fields can disagree with it.
+type errorDocument = v1.ErrorDocument
 
 // firstJSON finds the first complete JSON object in out: the CLI writes its document to
 // stderr and a command may have written its own lines to stdout, so the document is
