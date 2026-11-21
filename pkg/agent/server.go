@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -351,18 +350,19 @@ func (s *server) handlePrepare() error {
 
 // handlePut receives a stream of file frames and writes them to req.Path.
 //
-// The bytes are written to a temporary file next to req.Path and renamed onto
-// req.Path only after the terminal empty file frame arrives, so an interrupted
-// or failed transfer cannot truncate an existing destination. The temporary
-// file is removed on every error path.
+// The path is confined exactly as `stat`, `list`, `tar` and `untar` confine theirs —
+// lexical refusal of an absolute name or a ".." that leaves the root, then os.Root for
+// links — so `put` cannot write outside the workspace. It could before this: the path
+// went straight to OpenFile, relative to whichever directory the agent was started in,
+// which made `sandbox cp` a way out of the guest's workspace and not merely a way in.
+//
+// The bytes are written to a temporary file beside req.Path and renamed onto it only
+// after the terminal empty file frame arrives, so an interrupted or failed transfer
+// cannot truncate an existing destination. The temporary file is removed on every
+// error path.
 func (s *server) handlePut(req *Request) error {
 	if req.Path == "" {
 		return s.writeFailure(CodeInvalidRequest, "put: empty path")
-	}
-	if dir := filepath.Dir(req.Path); dir != "" && dir != "." {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return s.writeError("put: create parent directory for %s: %v", req.Path, err)
-		}
 	}
 
 	mode := os.FileMode(req.Mode)
@@ -370,69 +370,103 @@ func (s *server) handlePut(req *Request) error {
 		mode = 0o644
 	}
 
-	tmpPath := req.Path + ".sc-put-tmp"
-	f, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	write, err := s.openPut(req.Path, mode, req.Rooted)
 	if err != nil {
-		return s.writeError("put: open temp file for %s: %v", req.Path, err)
+		// A refused path is the caller's mistake, not this agent's trouble: it is
+		// answered with the same code `stat` gives it, so one rule covers both. The
+		// payload is drained first — the caller is still sending it, and a reply sent
+		// while it holds those bytes would deadlock both sides on a full pipe.
+		s.drainPutStream()
+		return s.writeFileFailure(err)
 	}
-	// Best effort: a no-op once the rename below succeeds.
-	defer func() { _ = os.Remove(tmpPath) }()
+	// Best effort: a no-op after Commit, and the file a failed transfer left is not a
+	// file a later read should find.
+	defer write.Abort()
 
 	for {
 		if s.reqCtx.Err() != nil {
-			_ = f.Close()
 			return s.writeFailure(CodeDeadlineExceeded, "put: deadline exceeded before the transfer finished")
 		}
 		var msg Message
 		// A put payload is a stream, so it is bounded by the stream limit
 		// rather than the smaller control-frame cap.
 		if _, err := ReadStreamFrame(s.rw, &msg); err != nil {
-			_ = f.Close()
 			return fmt.Errorf("put: read data frame: %w", err)
 		}
 		if msg.Type != "file" {
-			_ = f.Close()
 			return s.writeError("put: unexpected frame type %q", msg.Type)
 		}
 		if len(msg.Data) == 0 {
 			break
 		}
-		if _, err := f.Write(msg.Data); err != nil {
-			_ = f.Close()
+		if _, err := write.Write(msg.Data); err != nil {
 			return s.writeError("put: write %s: %v", req.Path, err)
 		}
 	}
-	if err := f.Close(); err != nil {
-		return s.writeError("put: close %s: %v", req.Path, err)
-	}
-	// Apply the requested mode explicitly: OpenFile only honours it on create.
-	if err := os.Chmod(tmpPath, mode); err != nil {
-		return s.writeError("put: chmod %s: %v", req.Path, err)
-	}
-	if err := os.Rename(tmpPath, req.Path); err != nil {
-		return s.writeError("put: rename temp file to %s: %v", req.Path, err)
+
+	if err := write.Commit(mode); err != nil {
+		return s.writeFileFailure(err)
 	}
 	return s.write(Message{Type: "ok"})
 }
 
+// openPut opens a put's destination.
+//
+// A rooted request is the sandbox plane: its path is confined to the workspace, so a
+// credential scoped to one sandbox cannot write the guest's own files with it. A
+// request that does not ask to be rooted is the older plane — `vm cp` and the task file
+// routes — where the caller names an absolute guest path and there is no scoped
+// credential in front of the operation.
+func (s *server) openPut(path string, mode os.FileMode, rooted bool) (*guestWrite, error) {
+	return createGuestFile(path, mode, rooted)
+}
+
+// openGet opens a get's source, with the same two planes openPut has.
+func (s *server) openGet(path string, rooted bool) (io.ReadCloser, error) {
+	return guestRead(path, rooted)
+}
+
+// drainPutStream reads a put's payload to its end and discards it, so a refusal that
+// was decided before the first byte can still be answered. It is what `untar` does
+// with its own reader, and for the same reason: the peer is blocked writing frames
+// nobody will read.
+//
+// A failure to drain is not reported: the connection is already unusable, and the
+// caller is about to be told why the path was refused.
+func (s *server) drainPutStream() {
+	for {
+		var msg Message
+		if _, err := ReadStreamFrame(s.rw, &msg); err != nil {
+			return
+		}
+		if msg.Type != "file" || len(msg.Data) == 0 {
+			return
+		}
+	}
+}
+
 // handleGet streams req.Path to the client as file frames, terminated by an
 // empty file frame.
+//
+// The path is confined through the same seam as `put`, so a read cannot reach outside
+// the workspace either — a sandbox-scoped `sandboxes:files` credential is a way into
+// one sandbox's workspace, not a way to read the guest's own files.
 func (s *server) handleGet(req *Request) error {
 	if req.Path == "" {
 		return s.writeFailure(CodeInvalidRequest, "get: empty path")
 	}
-	f, err := os.Open(req.Path)
+	file, err := s.openGet(req.Path, req.Rooted)
 	if err != nil {
-		return s.writeError("get: open %s: %v", req.Path, err)
+		return s.writeFileFailure(err)
 	}
-	defer func() { _ = f.Close() }()
+	defer func() { _ = file.Close() }()
 
 	buf := make([]byte, fileChunkSize)
 	for {
 		if s.reqCtx.Err() != nil {
 			return s.writeFailure(CodeDeadlineExceeded, "get: deadline exceeded before the transfer finished")
 		}
-		n, err := f.Read(buf)
+		n, err := file.Read(buf)
 		if n > 0 {
 			if werr := s.write(Message{Type: "file", Data: buf[:n]}); werr != nil {
 				return werr

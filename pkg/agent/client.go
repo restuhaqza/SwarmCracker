@@ -852,7 +852,23 @@ func (c *Client) Quiesce(ctx context.Context, action string) (QuiesceReport, err
 }
 
 // CopyTo streams src to guestPath with the given mode (0644 when mode is 0).
+//
+// guestPath is the guest's own path, absolute or relative to the agent's directory: it is
+// the task plane, where a caller names /etc/app/app.conf and there is no scoped
+// credential in front of the operation. A sandbox uses CopyToRooted instead, where the
+// path is confined to the workspace.
 func (c *Client) CopyTo(ctx context.Context, guestPath string, src io.Reader, mode uint32) error {
+	return c.copyTo(ctx, guestPath, src, mode, false)
+}
+
+// CopyToRooted is CopyTo for a path relative to the guest's workspace root, which the
+// guest refuses to leave: it is the sandbox plane, where the credential in front of the
+// operation reaches one workspace and must not reach the guest's own files.
+func (c *Client) CopyToRooted(ctx context.Context, guestPath string, src io.Reader, mode uint32) error {
+	return c.copyTo(ctx, guestPath, src, mode, true)
+}
+
+func (c *Client) copyTo(ctx context.Context, guestPath string, src io.Reader, mode uint32, rooted bool) error {
 	if c.consumed {
 		return errConsumed
 	}
@@ -865,7 +881,7 @@ func (c *Client) CopyTo(ctx context.Context, guestPath string, src io.Reader, mo
 	stop := c.watchContext(ctx)
 	defer stop()
 
-	req := Request{Op: CapPut, Path: guestPath, Mode: mode}
+	req := Request{Op: CapPut, Path: guestPath, Mode: mode, Rooted: rooted}
 	if err := c.begin(ctx, &req); err != nil {
 		return err
 	}
@@ -976,7 +992,19 @@ func (c *Client) Untar(ctx context.Context, guestPath string, r io.Reader) (TarS
 }
 
 // CopyFrom streams guestPath from the guest into dst.
+//
+// Like CopyTo, guestPath is the guest's own path: the task plane.
 func (c *Client) CopyFrom(ctx context.Context, guestPath string, dst io.Writer) error {
+	return c.copyFrom(ctx, guestPath, dst, false)
+}
+
+// CopyFromRooted is CopyFrom for a path relative to the guest's workspace root, which the
+// guest refuses to leave.
+func (c *Client) CopyFromRooted(ctx context.Context, guestPath string, dst io.Writer) error {
+	return c.copyFrom(ctx, guestPath, dst, true)
+}
+
+func (c *Client) copyFrom(ctx context.Context, guestPath string, dst io.Writer, rooted bool) error {
 	if c.consumed {
 		return errConsumed
 	}
@@ -989,7 +1017,7 @@ func (c *Client) CopyFrom(ctx context.Context, guestPath string, dst io.Writer) 
 	if err := c.requireCap(CapGet); err != nil {
 		return err
 	}
-	req := Request{Op: CapGet, Path: guestPath}
+	req := Request{Op: CapGet, Path: guestPath, Rooted: rooted}
 	if err := c.begin(ctx, &req); err != nil {
 		return err
 	}

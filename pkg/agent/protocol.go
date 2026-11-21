@@ -245,7 +245,18 @@ type Request struct {
 	Env        []string `json:"env,omitempty"`
 	WorkDir    string   `json:"workdir,omitempty"`
 	Path       string   `json:"path,omitempty"`
-	Mode       uint32   `json:"mode,omitempty"`
+	// Rooted says Path is relative to the guest's file root (WorkspaceRoot) and must
+	// stay inside it. It is how the sandbox plane asks for a confined put or get: a
+	// sandbox's file operations reach one workspace, and a credential scoped to it
+	// must not be a way to read or write the guest's own files.
+	//
+	// It is a field rather than the only behaviour because `vm cp` and the task file
+	// routes are the older plane: they name absolute guest paths ("/etc/app/app.conf")
+	// and have no scoped credential in front of them. A request that does not set
+	// Rooted keeps that meaning, so this is additive for the plane that already exists
+	// and fail-closed for the plane that has a token in front of it.
+	Rooted bool   `json:"rooted,omitempty"`
+	Mode   uint32 `json:"mode,omitempty"`
 	// Token is the per-boot credential the node provisioned into this guest's
 	// rootfs. It is carried only by hello; a guest agent with a token configured
 	// closes the connection without a frame when it is missing or wrong.

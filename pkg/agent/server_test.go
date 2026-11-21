@@ -161,12 +161,13 @@ func TestServeConnExecMissingBinary(t *testing.T) {
 }
 
 func TestServeConnPutThenGetRoundTrip(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "nested", "file.txt")
+	root := withFileRoot(t)
+	rel := "nested/file.txt"
+	path := filepath.Join(root, rel)
 	content := []byte("hello guest agent")
 
 	conn, _ := newPipePair(t)
-	require.NoError(t, WriteFrame(conn, Request{Op: "put", Path: path, Mode: 0o640}))
+	require.NoError(t, WriteFrame(conn, Request{Op: "put", Path: rel, Mode: 0o640, Rooted: true}))
 	require.NoError(t, WriteFrame(conn, Message{Type: "file", Data: content[:5]}))
 	require.NoError(t, WriteFrame(conn, Message{Type: "file", Data: content[5:]}))
 	require.NoError(t, WriteFrame(conn, Message{Type: "file"}))
@@ -182,7 +183,7 @@ func TestServeConnPutThenGetRoundTrip(t *testing.T) {
 	assert.Equal(t, os.FileMode(0o640), info.Mode().Perm())
 
 	// get round-trips the same bytes.
-	require.NoError(t, WriteFrame(conn, Request{Op: "get", Path: path}))
+	require.NoError(t, WriteFrame(conn, Request{Op: "get", Path: rel, Rooted: true}))
 	var out bytes.Buffer
 	for {
 		m := readMessage(t, conn)
@@ -196,11 +197,11 @@ func TestServeConnPutThenGetRoundTrip(t *testing.T) {
 }
 
 func TestServeConnPutDefaultMode(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "default.txt")
+	root := withFileRoot(t)
+	path := filepath.Join(root, "default.txt")
 
 	conn, _ := newPipePair(t)
-	require.NoError(t, WriteFrame(conn, Request{Op: "put", Path: path}))
+	require.NoError(t, WriteFrame(conn, Request{Op: "put", Path: "default.txt", Rooted: true}))
 	require.NoError(t, WriteFrame(conn, Message{Type: "file", Data: []byte("x")}))
 	require.NoError(t, WriteFrame(conn, Message{Type: "file"}))
 	require.Equal(t, "ok", readMessage(t, conn).Type)
@@ -220,8 +221,9 @@ func TestServeConnPutEmptyPath(t *testing.T) {
 }
 
 func TestServeConnPutUnexpectedFrameType(t *testing.T) {
+	withFileRoot(t)
 	conn, _ := newPipePair(t)
-	require.NoError(t, WriteFrame(conn, Request{Op: "put", Path: filepath.Join(t.TempDir(), "f")}))
+	require.NoError(t, WriteFrame(conn, Request{Op: "put", Path: "f", Rooted: true}))
 	require.NoError(t, WriteFrame(conn, Message{Type: "stdout", Data: []byte("nope")}))
 
 	msg := readMessage(t, conn)
@@ -233,12 +235,12 @@ func TestServeConnPutUnexpectedFrameType(t *testing.T) {
 // the terminal frame leaves a pre-existing destination untouched and returns an
 // error frame instead of truncating it.
 func TestServeConnPutBadFrameKeepsDestination(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "existing.txt")
+	root := withFileRoot(t)
+	path := filepath.Join(root, "existing.txt")
 	require.NoError(t, os.WriteFile(path, []byte("precious"), 0o644))
 
 	conn, _ := newPipePair(t)
-	require.NoError(t, WriteFrame(conn, Request{Op: "put", Path: path}))
+	require.NoError(t, WriteFrame(conn, Request{Op: "put", Path: "existing.txt", Rooted: true}))
 	require.NoError(t, WriteFrame(conn, Message{Type: "file", Data: []byte("partial")}))
 	require.NoError(t, WriteFrame(conn, Message{Type: "stdout", Data: []byte("bad")}))
 
@@ -288,12 +290,13 @@ func TestServeConnPutInterruptedStreamKeepsDestination(t *testing.T) {
 }
 
 func TestServeConnGetMissingFile(t *testing.T) {
+	withFileRoot(t)
 	conn, _ := newPipePair(t)
-	require.NoError(t, WriteFrame(conn, Request{Op: "get", Path: filepath.Join(t.TempDir(), "nope.txt")}))
+	require.NoError(t, WriteFrame(conn, Request{Op: "get", Path: "nope.txt", Rooted: true}))
 
 	msg := readMessage(t, conn)
 	assert.Equal(t, "error", msg.Type)
-	assert.Contains(t, msg.Error, "open")
+	assert.Contains(t, msg.Error, "no such file")
 }
 
 func TestServeConnGetEmptyPath(t *testing.T) {
@@ -504,22 +507,32 @@ func TestServeConnClientGoneDuringExec(t *testing.T) {
 	}
 }
 
+// TestServeConnPutParentIsFile is a refused destination: the reply comes after the
+// payload has been drained, because a caller is still sending it and a reply written
+// while those frames arrive would deadlock both sides on a full pipe.
 func TestServeConnPutParentIsFile(t *testing.T) {
-	dir := t.TempDir()
-	blocker := filepath.Join(dir, "blocker")
-	require.NoError(t, os.WriteFile(blocker, []byte("x"), 0o644))
+	root := withFileRoot(t)
+	require.NoError(t, os.WriteFile(filepath.Join(root, "blocker"), []byte("x"), 0o644))
 
 	conn, _ := newPipePair(t)
-	require.NoError(t, WriteFrame(conn, Request{Op: "put", Path: filepath.Join(blocker, "child")}))
+	require.NoError(t, WriteFrame(conn, Request{Op: "put", Path: "blocker/child", Rooted: true}))
+	require.NoError(t, WriteFrame(conn, Message{Type: "file", Data: []byte("x")}))
+	require.NoError(t, WriteFrame(conn, Message{Type: "file"}))
 
 	msg := readMessage(t, conn)
 	assert.Equal(t, "error", msg.Type)
-	assert.Contains(t, msg.Error, "parent directory")
+	assert.NotEmpty(t, msg.Error)
+	// The parent is a file, so the kernel refuses to look under it at all: either
+	// answer means nothing was written, and both are checked because neither alone
+	// is the whole truth (a missing path is ENOTDIR, not ENOENT).
+	_, err := os.Stat(filepath.Join(root, "blocker", "child"))
+	assert.Error(t, err, "nothing was written under a file")
 }
 
 func TestServeConnGetDirectory(t *testing.T) {
+	withFileRoot(t)
 	conn, _ := newPipePair(t)
-	require.NoError(t, WriteFrame(conn, Request{Op: "get", Path: t.TempDir()}))
+	require.NoError(t, WriteFrame(conn, Request{Op: "get", Path: ".", Rooted: true}))
 
 	msg := readMessage(t, conn)
 	assert.Equal(t, "error", msg.Type)
@@ -529,4 +542,75 @@ func TestServeConnGetDirectory(t *testing.T) {
 func TestExitCode(t *testing.T) {
 	assert.Equal(t, 0, exitCode(nil))
 	assert.Equal(t, -1, exitCode(errors.New("not an exit error")))
+}
+
+// TestServeConnPutRefusesALinkOutOfTheWorkspace is why both halves of the seam are
+// load-bearing: the path is lexically inside the root, so confine lets it through, and
+// it is os.Root that refuses the write because the directory it goes through is a link
+// to somewhere outside. A lexical check alone would have written the file.
+func TestServeConnPutRefusesALinkOutOfTheWorkspace(t *testing.T) {
+	root := withFileRoot(t)
+	outside := t.TempDir()
+	require.NoError(t, os.Symlink(outside, filepath.Join(root, "escape")))
+
+	conn, _ := newPipePair(t)
+	require.NoError(t, WriteFrame(conn, Request{Op: "put", Path: "escape/written.txt", Rooted: true}))
+	require.NoError(t, WriteFrame(conn, Message{Type: "file", Data: []byte("x")}))
+	require.NoError(t, WriteFrame(conn, Message{Type: "file"}))
+
+	msg := readMessage(t, conn)
+	assert.Equal(t, "error", msg.Type, "a write through a link out of the workspace is refused")
+	_, err := os.Stat(filepath.Join(outside, "written.txt"))
+	assert.True(t, os.IsNotExist(err), "and nothing landed outside the workspace")
+}
+
+// TestServeConnGetRefusesALinkOutOfTheWorkspace is the read half of the same rule: a
+// path that names a link to the guest's own /etc is not a way to read it.
+func TestServeConnGetRefusesALinkOutOfTheWorkspace(t *testing.T) {
+	root := withFileRoot(t)
+	outside := t.TempDir()
+	secret := filepath.Join(outside, "secret.txt")
+	require.NoError(t, os.WriteFile(secret, []byte("not yours"), 0o600))
+	require.NoError(t, os.Symlink(outside, filepath.Join(root, "escape")))
+
+	conn, _ := newPipePair(t)
+	require.NoError(t, WriteFrame(conn, Request{Op: "get", Path: "escape/secret.txt", Rooted: true}))
+
+	msg := readMessage(t, conn)
+	assert.Equal(t, "error", msg.Type, "a read through a link out of the workspace is refused")
+	assert.NotContains(t, msg.Error, "not yours")
+}
+
+// TestPutAndGetKeepTheTaskPlaneUnrooted is the other half of the Rooted rule: the older
+// plane names absolute guest paths by design — `vm cp` copies to /etc/app/app.conf and
+// the task file routes do the same — and has no scoped credential in front of it. A
+// request that does not ask to be rooted must keep that meaning, or this change would
+// break a feature that is not part of the sandbox MVP.
+func TestPutAndGetKeepTheTaskPlaneUnrooted(t *testing.T) {
+	withFileRoot(t) // a workspace exists and is not where this goes
+
+	dir := t.TempDir()
+	absolute := filepath.Join(dir, "nested", "absolute.txt")
+
+	conn, _ := newPipePair(t)
+	require.NoError(t, WriteFrame(conn, Request{Op: "put", Path: absolute}))
+	require.NoError(t, WriteFrame(conn, Message{Type: "file", Data: []byte("task plane")}))
+	require.NoError(t, WriteFrame(conn, Message{Type: "file"}))
+	require.Equal(t, "ok", readMessage(t, conn).Type)
+
+	got, err := os.ReadFile(absolute)
+	require.NoError(t, err, "an unrooted put still writes the absolute path it named")
+	assert.Equal(t, "task plane", string(got))
+
+	require.NoError(t, WriteFrame(conn, Request{Op: "get", Path: absolute}))
+	var out bytes.Buffer
+	for {
+		m := readMessage(t, conn)
+		require.Equal(t, "file", m.Type)
+		if len(m.Data) == 0 {
+			break
+		}
+		out.Write(m.Data)
+	}
+	assert.Equal(t, "task plane", out.String())
 }

@@ -6,8 +6,16 @@ package main
 // that names a sandbox: `sandbox cp <id>:<guest-path> <local-path>` copies out, and
 // `sandbox cp <local-path> <id>:<guest-path>` copies in. The guest path names what is
 // created or read, relative to the workspace root the guest confines every file operation
-// to (a leading "/" is that root), so the two are symmetric: what a copy out wrote at a path
-// is what a copy in of the same path replaces.
+// to, so the two are symmetric: what a copy out wrote at a path is what a copy in of the
+// same path replaces.
+//
+// There is exactly one meaning, and the command adds nothing to it: `<id>:repo` and
+// `<id>:/repo` both name `/workspace/repo` when the workspace root is `/workspace`. A
+// leading "/" is the root, not the guest's own filesystem — the agent refuses a path that
+// would leave the root — which is why `workspace/repo` means `/workspace/workspace/repo`
+// and not `/workspace/repo`. The path is passed through as `path.Clean` gives it, with the
+// leading "/" dropped so that the two spellings of the same path are one string here; no
+// other part of the command interprets it.
 //
 // A file and a tree are both supported, in both directions, and neither is buffered: a
 // directory is streamed as a tar archive through a pipe, so a workspace of any size costs a
@@ -47,9 +55,13 @@ func newSandboxCopyCommand() *cobra.Command {
 		Long: `Copy a file or a tree between a sandbox's workspace and this machine.
 
 Exactly one of the two arguments names a sandbox, as <id>:<guest-path>. The guest path is
-relative to the sandbox's workspace root, which is the only directory its guest agent will
-read or write (a leading "/" is that root), and it names what is created or read: a copy in
-writes the local file, or the local directory's tree, at that path.
+relative to the sandbox's workspace root (/workspace in the shipped templates), which is the
+only directory its guest agent will read or write, and it names what is created or read: a
+copy in writes the local file, or the local directory's tree, at that path.
+
+A leading "/" is that root and nothing else: "<id>:repo" and "<id>:/repo" are the same path,
+and on a template whose workspace is /workspace both mean /workspace/repo. Nothing is
+prepended, so "<id>:workspace/repo" means /workspace/workspace/repo — write "<id>:repo".
 
 A directory is copied as a tar archive streamed in both directions, so a repository-sized
 tree costs no more memory than a chunk of it. A path that is neither a file nor a
@@ -62,9 +74,9 @@ machine cannot hold (a device, a fifo) are skipped and counted.
 
 Writing a tree needs the template's agent to speak the untar operation. A template built
 before it answers with the capability it lacks, and a single file still arrives there.`,
-		Example: `  swarmcracker sandbox cp 5f3a1b2c9d:workspace/app.log ./app.log
-  swarmcracker sandbox cp ./repo 5f3a1b2c9d:workspace/repo
-  swarmcracker sandbox cp 5f3a1b2c9d:workspace ./backup`,
+		Example: `  swarmcracker sandbox cp 5f3a1b2c9d:repo ./repo
+  swarmcracker sandbox cp ./repo 5f3a1b2c9d:repo
+  swarmcracker sandbox cp 5f3a1b2c9d:/repo ./backup`,
 		Args:         cobra.ExactArgs(2),
 		SilenceUsage: true,
 		PreRun:       func(cmd *cobra.Command, _ []string) { setupLogging(logLevel) },
@@ -115,8 +127,10 @@ func splitSandboxRef(arg string) (id, guestPath string, ok bool) {
 		return "", "", false
 	}
 	// A leading "/" is the guest's workspace root, which is where every guest path is
-	// relative to. The agent confines every file operation to it, so the two spellings
-	// mean the same thing and both are accepted.
+	// relative to: the agent confines every file operation to it. So the two spellings
+	// mean the same path, and the only change made here is to write them as one string.
+	// Nothing is prepended — "workspace/repo" is a path of its own, inside the root,
+	// and the command says so rather than rewriting it into "repo".
 	return arg[:colon], strings.TrimPrefix(path.Clean(rest), "/"), true
 }
 

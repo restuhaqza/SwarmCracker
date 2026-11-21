@@ -14,6 +14,11 @@ package sandbox
 // passes them through without interpreting them. That is deliberate — the guest is the
 // only side that knows what its workspace is, and a node that rewrote paths would be a
 // second, weaker rule beside the confinement the agent already applies.
+//
+// Every operation here is the *rooted* form (CopyToRooted, CopyFromRooted, and an untar
+// whose prefix confine enforces): the credential in front of these routes reaches one
+// sandbox's workspace, and none of them may touch the guest's own files. The task plane
+// keeps the unrooted form, which is what `vm cp` and the task file routes mean.
 
 import (
 	"context"
@@ -142,7 +147,7 @@ func (m *Manager) SendFile(ctx context.Context, id, guestPath string, kind FileK
 
 	switch kind {
 	case FileKindFile:
-		if err := client.CopyFrom(ctx, guestPath, w); err != nil {
+		if err := client.CopyFromRooted(ctx, guestPath, w); err != nil {
 			return agent.TarSummary{}, fmt.Errorf("sandbox %s: send %s: %w", rec.ID, guestPath, err)
 		}
 		m.touch(rec.ID)
@@ -179,7 +184,7 @@ func (m *Manager) PutFile(ctx context.Context, id, guestPath string, mode uint32
 	defer func() { _ = client.Close() }()
 
 	counting := &countingReader{r: r}
-	if err := client.CopyTo(ctx, guestPath, counting, mode); err != nil {
+	if err := client.CopyToRooted(ctx, guestPath, counting, mode); err != nil {
 		return counting.n, fmt.Errorf("sandbox %s: write %s: %w", rec.ID, guestPath, err)
 	}
 	m.touch(rec.ID)
