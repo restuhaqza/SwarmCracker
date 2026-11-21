@@ -126,8 +126,13 @@ is not a criterion that held.
 
 ### What a criterion does not prove
 
-Two limits are worth knowing before a ledger is read as more than it is:
+Three limits are worth knowing before a ledger is read as more than it is:
 
+- **Criterion 11 proves that the manifest and the guest agree, not that the template is
+  current.** It reads the template's recorded agent and the `hello` the guest answers, and
+  compares them; a template built from an older tree with a matching manifest answers just
+  as consistently. Freshness is criterion `3b`'s subject (a template that predates a
+  capability must be refused), and neither criterion is the other.
 - **`run-clean` cannot prove the host is clean, in either direction.** It compares the host
   before and after this run, and its VMM check is best-effort: a jailed VMM whose argument
   line does not name the sandbox is invisible to it. What does settle the run's own
@@ -139,6 +144,22 @@ Two limits are worth knowing before a ledger is read as more than it is:
   checked as entries in the removal document `rm` returns. That document is the product
   describing itself, so a `rm` that under-reports a resource it did not free would still
   pass. The host-side checks are why the criterion is worth running at all.
+
+### What the command-line guard does, and what it does not
+
+The invariant is **one composer** (`withCLIFlags`), not "the door rejects every mistake".
+`host.run` refuses exactly one shape — a CLI format flag (`-o`/`--output`) that arrived
+after `--`, where only the guest's argv may be — because that is the shape that failed a
+criterion three times: the flag became the guest's argument, the CLI answered in prose, and
+a test that meant to read a document decoded the word "error". A fourth builder therefore
+fails in a self-test rather than in a host run.
+
+Beyond that the guard is deliberately shallow, and the reason is that a guest argv is a
+legitimate place for a flag name the CLI also has. One criterion asserts that
+`--host` after `--` reaches the guest, so `withCLIFlags` **moves** the flags it is given
+instead of rejecting a repeated name, and a command line composed by hand out of flags that
+do not collide with the CLI's will still run. What the package relies on is the convention,
+checked by the tests in `harness_self_test.go`, not a total validator.
 
 ## What it needs
 
