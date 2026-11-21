@@ -248,6 +248,23 @@ the tree is refused, naming the capability it lacks:
   "details": {"reason": "template_capability_missing", "capability": "untar"}}}
 ```
 
+**Every `sandbox cp` needs the template's agent to speak `rooted`**, and that one is
+checked before a single byte moves. The confinement a copy relies on is a field on the
+request, and an agent built before it would unmarshal the field and ignore it — writing
+the path exactly as given, which is the hole confinement exists to close. So the node
+refuses a copy to such a template rather than trusting it:
+
+```json
+{"error": {"code": "not_implemented",
+  "details": {"reason": "template_capability_missing", "capability": "rooted"}}}
+```
+
+The sandbox is not broken — `exec`, `status`, `logs` and an unconfined `vm cp` all still
+reach it — but `sandbox cp` is refused until the template is rebuilt from its recipe with
+the current agent. That is the same rule `untar` follows, and the same reason it is per
+call rather than at create: an installed template keeps working for everything it did
+before.
+
 An archive arriving from a sandbox is **untrusted input**, even when the sandbox is yours.
 The node's guest-side extraction and this machine's own extraction hold the same rules: an
 entry that would write outside the destination is refused rather than skipped, a symbolic

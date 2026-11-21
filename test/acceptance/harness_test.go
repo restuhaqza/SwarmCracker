@@ -49,12 +49,16 @@ import (
 // named here rather than looked up on PATH: a run must exercise the tree it checked
 // out, not whatever is installed on the host.
 const (
-	sandboxdBin      = "SANDBOXD_BIN"
-	swarmcrackerBin  = "SWARMCRACKER_BIN"
-	defaultSandboxd  = "sandboxd"
-	defaultSwarmcli  = "swarmcracker"
-	createDeadline   = 4 * time.Second
-	templateEnv      = "SWARMCRACKER_TEST_TEMPLATE"
+	sandboxdBin     = "SANDBOXD_BIN"
+	swarmcrackerBin = "SWARMCRACKER_BIN"
+	defaultSandboxd = "sandboxd"
+	defaultSwarmcli = "swarmcracker"
+	createDeadline  = 4 * time.Second
+	templateEnv     = "SWARMCRACKER_TEST_TEMPLATE"
+	// olderTemplateEnv names a template on the host whose agent predates the rooted
+	// capability — a stock template that was never rebuilt, which is the case that would
+	// be written to without confinement if the capability gate were missing.
+	olderTemplateEnv = "SWARMCRACKER_TEST_OLDER_TEMPLATE"
 	defaultTemplate  = "sandbox-base"
 	keepScratchEnv   = "SWARMCRACKER_TEST_KEEP"
 	evidenceDirEnv   = "SWARMCRACKER_TEST_EVIDENCE"
@@ -443,6 +447,19 @@ type sandboxList struct {
 	Kind          string    `json:"kind"`
 	Items         []sandbox `json:"items"`
 	Checkpoint    string    `json:"checkpoint"`
+}
+
+// createFrom makes one sandbox from a named template, for a criterion that has to boot a
+// template other than the run's own — an older one, above all.
+func (h *host) createFrom(id, tmpl string, extra ...string) sandbox {
+	h.t.Helper()
+	args := append([]string{"sandbox", "create", tmpl, "--id", id}, extra...)
+	var doc sandboxDocument
+	h.runJSON(&doc, args...)
+	require.Equal(h.t, "Sandbox", doc.Kind)
+	require.Equal(h.t, "ready", doc.State, "create must return a ready sandbox, not a VMM that started")
+	require.Equal(h.t, id, doc.ID)
+	return doc.sandbox
 }
 
 // create makes one sandbox and returns its document.

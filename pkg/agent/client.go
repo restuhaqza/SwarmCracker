@@ -864,7 +864,14 @@ func (c *Client) CopyTo(ctx context.Context, guestPath string, src io.Reader, mo
 // CopyToRooted is CopyTo for a path relative to the guest's workspace root, which the
 // guest refuses to leave: it is the sandbox plane, where the credential in front of the
 // operation reaches one workspace and must not reach the guest's own files.
+//
+// It requires the rooted capability, before a byte is sent. An agent that predates it
+// ignores the flag and writes the path exactly as given — the hole rooted transfers
+// exist to close — so a guest that does not advertise it is refused rather than trusted.
 func (c *Client) CopyToRooted(ctx context.Context, guestPath string, src io.Reader, mode uint32) error {
+	if err := c.requireCap(CapRooted); err != nil {
+		return err
+	}
 	return c.copyTo(ctx, guestPath, src, mode, true)
 }
 
@@ -999,8 +1006,11 @@ func (c *Client) CopyFrom(ctx context.Context, guestPath string, dst io.Writer) 
 }
 
 // CopyFromRooted is CopyFrom for a path relative to the guest's workspace root, which the
-// guest refuses to leave.
+// guest refuses to leave. Like CopyToRooted it requires the rooted capability first.
 func (c *Client) CopyFromRooted(ctx context.Context, guestPath string, dst io.Writer) error {
+	if err := c.requireCap(CapRooted); err != nil {
+		return err
+	}
 	return c.copyFrom(ctx, guestPath, dst, true)
 }
 

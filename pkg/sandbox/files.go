@@ -148,6 +148,9 @@ func (m *Manager) SendFile(ctx context.Context, id, guestPath string, kind FileK
 	switch kind {
 	case FileKindFile:
 		if err := client.CopyFromRooted(ctx, guestPath, w); err != nil {
+			if missingCapability(err, agent.CapRooted) {
+				return agent.TarSummary{}, &MissingCapabilityError{Sandbox: rec.ID, Capability: agent.CapRooted}
+			}
 			return agent.TarSummary{}, fmt.Errorf("sandbox %s: send %s: %w", rec.ID, guestPath, err)
 		}
 		m.touch(rec.ID)
@@ -168,6 +171,11 @@ func (m *Manager) SendFile(ctx context.Context, id, guestPath string, kind FileK
 
 // PutFile streams r into one guest path as a regular file, and reports how many bytes it
 // wrote. The mode is the guest file's; zero means 0644.
+//
+// A template whose agent predates the rooted capability is refused here, per call and as
+// the capability it is, rather than being handed a path the guest would write without
+// confining it. The sandbox itself is fine: it execs, it lists, and `vm cp` reaches it
+// on the unrooted plane — what it cannot do is take a sandbox copy until it is rebuilt.
 func (m *Manager) PutFile(ctx context.Context, id, guestPath string, mode uint32, r io.Reader) (int64, error) {
 	rec, err := m.ready(id)
 	if err != nil {
@@ -185,6 +193,9 @@ func (m *Manager) PutFile(ctx context.Context, id, guestPath string, mode uint32
 
 	counting := &countingReader{r: r}
 	if err := client.CopyToRooted(ctx, guestPath, counting, mode); err != nil {
+		if missingCapability(err, agent.CapRooted) {
+			return 0, &MissingCapabilityError{Sandbox: rec.ID, Capability: agent.CapRooted}
+		}
 		return counting.n, fmt.Errorf("sandbox %s: write %s: %w", rec.ID, guestPath, err)
 	}
 	m.touch(rec.ID)

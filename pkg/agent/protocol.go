@@ -95,6 +95,22 @@ const (
 	// into it — is refused per call with unsupported_op rather than making every
 	// installed template unusable until it is rebuilt.
 	CapUntar = "untar"
+	// CapRooted is the promise that put and get enforce Request.Rooted: a path they are
+	// given with that flag set stays inside the guest's file root, and one that would
+	// leave it is refused with unsafe_path.
+	//
+	// Without this marker a host cannot tell an agent that confines a rooted request from
+	// one that predates the field and silently ignores it — the older agent would write
+	// the path exactly as given, which is the hole rooted transfers exist to close. So it
+	// is a capability of its own, advertised only by an agent that enforces it, and a
+	// host refuses a rooted transfer to anything else before sending a byte.
+	//
+	// Like untar it is optional and deliberately kept out of golden.RequiredAgentCaps: a
+	// template whose agent predates it still runs, still execs, and still serves the
+	// unrooted plane (`vm cp` and the task file routes), and only a sandbox copy that
+	// needs confinement is refused — per call, naming the capability, rather than making
+	// every installed template unusable until it is rebuilt.
+	CapRooted = "rooted"
 )
 
 // capabilities is the closed set of operations this agent build implements. It
@@ -103,7 +119,7 @@ const (
 // would fail after the host committed to it.
 var capabilities = []string{
 	CapHello, CapExec, CapPut, CapGet, CapMetrics, CapPrepare,
-	CapInfo, CapNet, CapStat, CapList, CapTar, CapUntar, CapActivity, CapQuiesce,
+	CapInfo, CapNet, CapStat, CapList, CapTar, CapUntar, CapRooted, CapActivity, CapQuiesce,
 }
 
 // Capabilities returns the operations this agent build advertises. The result is

@@ -120,6 +120,62 @@ func TestMVP(t *testing.T) {
 		note(t, "tree in and out at /workspace/repo: README.md, src/main.sh (0755), src/deep/note.txt; /workspace/workspace absent")
 	})
 
+	// 3b — the same copy against a template whose agent predates the rooted capability.
+	//
+	// This is the case that makes the capability gate load-bearing rather than tidy: an
+	// older agent unmarshals `rooted` and ignores it, so without the gate the host would
+	// send a confined copy to an agent that writes the path as given — the hole #210
+	// closes, reopened through a template that was never rebuilt. The assertion is not
+	// "an error came back": it is that the refused copy wrote nothing, checked in the
+	// guest.
+	criterion(t, "3b-cp-old-template", "a template older than the rooted capability refuses cp and writes nothing", func(t *testing.T) {
+		older := strings.TrimSpace(os.Getenv(olderTemplateEnv))
+		if older == "" {
+			// The host may have no such template. That is not a pass: a criterion that was
+			// not measured is not a criterion that held, and a stock template on the lab
+			// host is exactly the case this exists for.
+			t.Fatalf("%s is not set: this criterion needs a template on the host whose agent predates the rooted capability (a stock template that was never rebuilt)", olderTemplateEnv)
+		}
+		t.Logf("the older template: %s", older)
+
+		rec := h.createFrom("mvp-old-cp", older)
+		t.Cleanup(func() { h.remove(rec.ID) })
+
+		// Its agent must really lack the capability, or the rest proves nothing about an
+		// old agent: a template that has it is not this criterion's subject.
+		inspected := h.mustRun("template", "inspect", older, "--output-dir", h.goldenDir)
+		if strings.Contains(inspected, "rooted") {
+			t.Fatalf("the template %s already advertises the rooted capability, so it is not an older template", older)
+		}
+
+		local := filepath.Join(h.scratch, "old-copy.txt")
+		require.NoError(t, os.WriteFile(local, []byte("must not land\n"), 0o644))
+
+		// The refusal is the capability, by name, and it is per call: the sandbox itself
+		// is fine.
+		out, stderr, code := h.run("sandbox", "cp", local, rec.ID+":older-copy.txt", "-o", "json")
+		require.NotZero(t, code, "a rooted copy to an agent without the capability must be refused")
+		var doc errorDocument
+		require.NoError(t, json.Unmarshal([]byte(firstJSON(stderr+out)), &doc),
+			"the refusal is an Error document:\n%s%s", out, stderr)
+		assert.Equal(t, string("not_implemented"), doc.Error.Code)
+		assert.Equal(t, "template_capability_missing", doc.Error.Details["reason"])
+		assert.Equal(t, "rooted", doc.Error.Details["capability"], "the refusal names the capability")
+
+		// Nothing was written anywhere: not at the path, not at the doubled path an
+		// unconfined write would have used.
+		for _, path := range []string{"/workspace/older-copy.txt", "/workspace/workspace/older-copy.txt"} {
+			_, execCode := h.exec(rec.ID, "/bin/sh", "-c", "test -e "+path)
+			assert.NotZero(t, execCode, "%s must not exist: the refused copy wrote nothing", path)
+		}
+
+		// And the sandbox still works: the refusal is the capability, not a dead sandbox —
+		// the unrooted plane reaches it.
+		assert.Contains(t, h.mustExec(rec.ID, "/bin/sh", "-c", "echo alive"), "alive")
+
+		note(t, "the older template's cp was refused as template_capability_missing/rooted and wrote nothing; the sandbox still runs")
+	})
+
 	// 4 — expose serves an authenticated URL, refuses it without the token, and the
 	// listener is gone once the sandbox is.
 	criterion(t, "4-expose", "expose gives an authenticated URL and dies with its sandbox", func(t *testing.T) {

@@ -909,3 +909,60 @@ func (w errWriter) Write([]byte) (int, error) { return 0, w.err }
 type errReader struct{ err error }
 
 func (r errReader) Read([]byte) (int, error) { return 0, r.err }
+
+// TestRootedCopyRefusesAGuestWithoutTheCapability is the guard that makes Request.Rooted
+// safe to send at all.
+//
+// The failure it prevents is silent: put and get are capabilities every v2 agent
+// advertises, and Rooted is a plain field an older one unmarshals and ignores. Without
+// this check the host would send a rooted transfer to an agent that writes the path as
+// given, and the caller would be told the copy succeeded.
+//
+// It fails if the refusal is removed — the dial below is to an agent that says it cannot
+// confine anything, and a client that asks it anyway writes the file.
+func TestRootedCopyRefusesAGuestWithoutTheCapability(t *testing.T) {
+	root := withFileRoot(t)
+
+	// An agent that speaks the older capability set: put and get, but no rooted promise.
+	caps := make([]string, 0, len(Capabilities()))
+	for _, capability := range Capabilities() {
+		if capability != CapRooted {
+			caps = append(caps, capability)
+		}
+	}
+	_, uds := startProxy(t, DefaultPort, func(p *fakeProxy) { p.serveCaps = caps })
+	c, err := Dial(context.Background(), uds, DefaultPort)
+	require.NoError(t, err)
+	defer func() { _ = c.Close() }()
+	require.NotNil(t, c.Hello().Caps, "the connection is up: the refusal is the capability, not the dial")
+
+	for _, attempt := range []struct {
+		name string
+		run  func() error
+	}{
+		{"put", func() error {
+			return c.CopyToRooted(context.Background(), "uploaded.txt", strings.NewReader("payload"), 0o600)
+		}},
+		{"get", func() error {
+			return c.CopyFromRooted(context.Background(), "existing.txt", &bytes.Buffer{})
+		}},
+	} {
+		t.Run(attempt.name, func(t *testing.T) {
+			err := attempt.run()
+			require.Error(t, err, "a rooted %s against a guest without the capability must be refused", attempt.name)
+			assert.Equal(t, CodeUnsupportedOp, CodeOf(err), "and refused as the capability it is")
+		})
+	}
+
+	// The assertion that matters: nothing was written. An agent that ignored the flag would
+	// have created this file, and that is exactly the hole.
+	_, statErr := os.Stat(filepath.Join(root, "uploaded.txt"))
+	assert.True(t, os.IsNotExist(statErr), "a refused rooted put writes nothing anywhere")
+
+	// The unrooted plane still works on the same connection: the older agent is refused
+	// the confined transfer, not put out of use.
+	require.NoError(t, c.CopyTo(context.Background(), filepath.Join(root, "plain.txt"), strings.NewReader("plain"), 0o600))
+	got, err := os.ReadFile(filepath.Join(root, "plain.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "plain", string(got))
+}

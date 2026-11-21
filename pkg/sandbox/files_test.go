@@ -547,3 +547,63 @@ func TestPutFileReportsAGuestThatCannotBeReached(t *testing.T) {
 	assert.Contains(t, err.Error(), "x")
 	assert.Empty(t, g.served())
 }
+
+// TestRootedCopyReportsATemplateWithoutTheCapabilityAsAMissingCapability is why the rooted
+// capability exists at all.
+//
+// Request.Rooted is a field an older agent unmarshals and ignores: put and get are
+// capabilities it already advertises, so without a marker the host would send a rooted
+// transfer to an agent that writes the path exactly as given — the hole confinement
+// closes. The test is therefore not about an error being returned; it is about nothing
+// being written.
+func TestRootedCopyReportsATemplateWithoutTheCapabilityAsAMissingCapability(t *testing.T) {
+	f := newFixture(t)
+	g := newFakeGuest(t, nil)
+	g.withoutCap(agent.CapRooted)
+	rec := readyWithFake(t, f, g)
+
+	// A put: refused, named as the capability it is, and nothing landed.
+	_, err := f.manager.PutFile(context.Background(), rec.ID, "escape.txt", 0o644, strings.NewReader("payload"))
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrMissingCapability)
+	var missing *MissingCapabilityError
+	require.ErrorAs(t, err, &missing)
+	assert.Equal(t, agent.CapRooted, missing.Capability, "the refusal names the capability")
+	assert.Equal(t, rec.ID, missing.Sandbox)
+	assert.Empty(t, g.served(), "the guest was never asked: the refusal is on the client, before a frame")
+
+	// A get: the same, so a template that predates the field cannot be read through it
+	// either. The path is not even resolved by the guest.
+	var out bytes.Buffer
+	_, err = f.manager.SendFile(context.Background(), rec.ID, "existing.txt", FileKindFile, &out)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrMissingCapability)
+	require.ErrorAs(t, err, &missing)
+	assert.Equal(t, agent.CapRooted, missing.Capability)
+	assert.Zero(t, out.Len(), "nothing was read")
+
+	// Nothing was written anywhere in the guest, which is the assertion that matters: an
+	// agent that ignored the flag would have written this file.
+	_, statErr := os.Stat(filepath.Join(g.root, "escape.txt"))
+	assert.True(t, os.IsNotExist(statErr), "a refused rooted copy writes nothing")
+
+	// And the unrooted plane is untouched: the same template still serves a copy through
+	// the task plane, which is what keeps `vm cp` working on an installed template.
+	assert.True(t, g.advertises(agent.CapPut), "the guest still advertises put")
+}
+
+// TestRootedCopyIsAllowedWhenTheGuestAdvertisesIt is the other side: the marker is not a
+// blanket refusal, and a guest that has it takes the transfer and confines it.
+func TestRootedCopyIsAllowedWhenTheGuestAdvertisesIt(t *testing.T) {
+	f := newFixture(t)
+	g := newFakeGuest(t, nil)
+	rec := readyWithFake(t, f, g)
+
+	require.True(t, g.advertises(agent.CapRooted), "the fake guest speaks the current capabilities")
+
+	written, err := f.manager.PutFile(context.Background(), rec.ID, "nested/written.txt", 0o644, strings.NewReader("payload"))
+	require.NoError(t, err)
+	assert.Equal(t, int64(len("payload")), written)
+	assert.Equal(t, "payload", g.read(t, "nested/written.txt"), "it landed inside the root")
+	assert.Equal(t, []string{"put"}, g.served())
+}
