@@ -78,6 +78,10 @@ next run would inherit.
   that did not happen.
 - **A secret is missing**: red, naming it.
 - **A criterion fails**: red, and the log names which one and what it observed.
+- **The host has no older template**: red. One criterion boots a template whose agent
+  predates the `rooted` capability, because that is the case a unit test cannot see — its
+  manifest is searched for in the node's template stores, and a host that has none has not
+  measured it.
 - **Something was left behind**: red, listing what.
 
 The run's log and the criteria it recorded are uploaded as an artifact for 90 days,

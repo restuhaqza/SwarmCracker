@@ -28,6 +28,13 @@ The run creates its own state directory, socket, jail base and rootfs under one 
 tree and removes nothing of anybody else's. Set `SWARMCRACKER_TEST_KEEP=1` to keep that
 tree for inspection; the daemon's log is `<scratch>/sandboxd.log`.
 
+One criterion needs a template whose guest agent predates the `rooted` capability — the
+stock template case that makes the capability gate load-bearing. Name it with
+`SWARMCRACKER_TEST_OLDER_TEMPLATE`, or leave that unset and the run searches the template
+stores (`SWARMCRACKER_GOLDEN_DIR` and `/var/lib/swarmcracker/templates`) for a manifest
+whose recorded agent lacks it and which this node can boot, recording which one it chose. A
+host with no such template fails that criterion: it has not measured the case.
+
 Set `SWARMCRACKER_TEST_EVIDENCE=<dir>` to have the run append one line per criterion to
 `<dir>/criteria.tsv` — that file is what the workflow uploads, and it is what a run is read
 from: one line per criterion, ending in `PASS`, `FAIL`, or `NOT EVALUATED` with the reason.

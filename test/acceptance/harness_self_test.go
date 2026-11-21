@@ -175,3 +175,66 @@ func timeAt(t *testing.T, n int) time.Time {
 	t.Helper()
 	return time.Date(2026, 11, 21, 12, 0, n, 0, time.UTC)
 }
+
+// TestManifestLacksRootedReadsTheRecordedAgent is the check the older-template search
+// rests on: a manifest whose agent does not advertise `rooted` is an older template, and
+// one that does is not — the criterion would otherwise pass or fail on the wrong subject.
+func TestManifestLacksRootedReadsTheRecordedAgent(t *testing.T) {
+	dir := t.TempDir()
+
+	old := filepath.Join(dir, "golden-stock-0.9.0.json")
+	require.NoError(t, os.WriteFile(old, []byte(`{
+		"name": "stock", "version": "0.9.0",
+		"agent": {"agentProtocol": "2", "agentVersion": "src-old", "agentCaps": ["hello", "put", "untar"]}
+	}`), 0o644))
+	ref, lacks, err := manifestLacksRooted(old)
+	require.NoError(t, err)
+	assert.True(t, lacks, "a manifest without the capability is an older template")
+	assert.Equal(t, "stock@0.9.0", ref)
+
+	current := filepath.Join(dir, "golden-fresh-1.0.0.json")
+	require.NoError(t, os.WriteFile(current, []byte(`{
+		"name": "fresh", "version": "1.0.0",
+		"agent": {"agentProtocol": "2", "agentVersion": "src-new", "agentCaps": ["hello", "put", "rooted"]}
+	}`), 0o644))
+	_, lacks, err = manifestLacksRooted(current)
+	require.NoError(t, err)
+	assert.False(t, lacks, "a manifest that advertises it is not the subject")
+
+	// A manifest with no version, or none readable, is not a template this criterion can
+	// use: an empty ref would make `inspect` fail for a reason of its own.
+	broken := filepath.Join(dir, "golden-broken.json")
+	require.NoError(t, os.WriteFile(broken, []byte(`{"name": "broken"}`), 0o644))
+	_, _, err = manifestLacksRooted(broken)
+	require.Error(t, err, "a manifest that names no version is refused")
+
+	require.Error(t, func() error { _, _, err := manifestLacksRooted(filepath.Join(dir, "absent.json")); return err }())
+}
+
+// TestOlderTemplateRefusesAStoreWithNoOlderTemplate pins the failure a host with only
+// current templates must produce: the criterion is red with the stores it looked in, not
+// silently passed.
+func TestOlderTemplateRefusesAStoreWithNoOlderTemplate(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "golden-fresh-1.0.0.json"), []byte(`{
+		"name": "fresh", "version": "1.0.0",
+		"agent": {"agentCaps": ["hello", "put", "rooted"]}
+	}`), 0o644))
+
+	t.Setenv(olderTemplateEnv, "")
+	h := &host{t: t, goldenDir: dir}
+	_, _, err := h.olderTemplate(t)
+	require.Error(t, err, "a host with no older template has not measured the criterion")
+	assert.Contains(t, err.Error(), "no template without the rooted capability", "the error says what it looked for")
+}
+
+// TestOlderTemplatePrefersTheConfiguredName keeps the operator's choice first, and says so:
+// a run whose subject was named must record that, not that it guessed.
+func TestOlderTemplatePrefersTheConfiguredName(t *testing.T) {
+	t.Setenv(olderTemplateEnv, "stock@0.9.0")
+	h := &host{t: t, goldenDir: t.TempDir()}
+	ref, source, err := h.olderTemplate(t)
+	require.NoError(t, err)
+	assert.Equal(t, "stock@0.9.0", ref)
+	assert.Contains(t, source, olderTemplateEnv)
+}

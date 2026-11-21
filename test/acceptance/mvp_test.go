@@ -129,20 +129,22 @@ func TestMVP(t *testing.T) {
 	// "an error came back": it is that the refused copy wrote nothing, checked in the
 	// guest.
 	criterion(t, "3b-cp-old-template", "a template older than the rooted capability refuses cp and writes nothing", func(t *testing.T) {
-		older := strings.TrimSpace(os.Getenv(olderTemplateEnv))
-		if older == "" {
-			// The host may have no such template. That is not a pass: a criterion that was
-			// not measured is not a criterion that held, and a stock template on the lab
-			// host is exactly the case this exists for.
-			t.Fatalf("%s is not set: this criterion needs a template on the host whose agent predates the rooted capability (a stock template that was never rebuilt)", olderTemplateEnv)
-		}
-		t.Logf("the older template: %s", older)
+		// The subject is whichever older template this host actually has — named, or found
+		// in its stores — and the run records which one it used. A host with none is a
+		// finding, not a skip: the case this criterion exists for is a template nobody
+		// rebuilt, and a host that has no such template has not measured it.
+		older, source, err := h.olderTemplate(t)
+		require.NoError(t, err, "this criterion needs a template whose agent predates the rooted capability")
+		t.Logf("the older template: %s", source)
+		note(t, "the older template is %s", source)
 
 		rec := h.createFrom("mvp-old-cp", older)
 		t.Cleanup(func() { h.remove(rec.ID) })
 
 		// Its agent must really lack the capability, or the rest proves nothing about an
-		// old agent: a template that has it is not this criterion's subject.
+		// old agent: a template that has it is not this criterion's subject. (A template
+		// named by the operator could be the wrong one; a found one already passed this
+		// check against its manifest, but a manifest can be stale about the guest.)
 		inspected := h.mustRun("template", "inspect", older, "--output-dir", h.goldenDir)
 		if strings.Contains(inspected, "rooted") {
 			t.Fatalf("the template %s already advertises the rooted capability, so it is not an older template", older)

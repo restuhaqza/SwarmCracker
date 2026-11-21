@@ -43,6 +43,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/restuhaqza/swarmcracker/pkg/agent"
 )
 
 // The binaries the run drives. They are built by scripts/host-evidence/run.sh and
@@ -638,4 +640,88 @@ func hostCommand(t *testing.T, label, name string, args ...string) string {
 	}
 	t.Logf("[host] %s\n  $ %s %s\n  exit %d\n%s", label, name, strings.Join(args, " "), code, indent(string(out)))
 	return string(out)
+}
+
+// olderTemplate finds a template on this host whose agent predates the rooted capability.
+//
+// It is what makes the capability criterion a criterion rather than a fixture: the case it
+// tests is a template that was never rebuilt, and the most useful one is whichever the host
+// actually has. The configured name wins; failing that, the store is searched for a
+// manifest whose recorded agent does not advertise `rooted` and which this host says it
+// can boot, and the path it picked is returned so the run can say which one it used.
+//
+// It returns an error, not a skip: a host with no older template has not measured the
+// criterion, and this run is the place that says so.
+func (h *host) olderTemplate(t *testing.T) (string, string, error) {
+	t.Helper()
+
+	if configured := strings.TrimSpace(os.Getenv(olderTemplateEnv)); configured != "" {
+		return configured, "configured by " + olderTemplateEnv, nil
+	}
+
+	// The stores a host may keep templates in: the one this run boots from, and the one
+	// `setup install` writes to.
+	stores := []string{h.goldenDir, "/var/lib/swarmcracker/templates"}
+	var tried []string
+	for _, store := range stores {
+		entries, err := os.ReadDir(store)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+				continue
+			}
+			path := filepath.Join(store, entry.Name())
+			ref, lacksRooted, err := manifestLacksRooted(path)
+			if err != nil || !lacksRooted {
+				continue
+			}
+			tried = append(tried, ref)
+
+			// A manifest this host cannot boot is not this criterion's subject: create
+			// would fail for the pin, which says nothing about the capability. `template
+			// inspect` is the same check a create makes, asked without booting anything.
+			out, stderr, _ := h.run("template", "inspect", ref, "--output-dir", store)
+			if !strings.Contains(out+stderr, "usable on this node") {
+				continue
+			}
+			return ref, fmt.Sprintf("%s (found in %s, not named by %s)", ref, store, olderTemplateEnv), nil
+		}
+	}
+
+	if len(tried) > 0 {
+		return "", "", fmt.Errorf("the host has %d template(s) without the rooted capability (%s) but none this node can boot",
+			len(tried), strings.Join(tried, ", "))
+	}
+	return "", "", fmt.Errorf("no template without the rooted capability in %s or /var/lib/swarmcracker/templates: a stock template that predates the capability is the case this criterion exists for",
+		h.goldenDir)
+}
+
+// manifestLacksRooted reports whether a template manifest's recorded agent does not
+// advertise the rooted capability, and the ref the manifest names.
+func manifestLacksRooted(path string) (string, bool, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", false, err
+	}
+	var manifest struct {
+		Name  string `json:"name"`
+		Vert  string `json:"version"`
+		Agent struct {
+			Caps []string `json:"agentCaps"`
+		} `json:"agent"`
+	}
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		return "", false, err
+	}
+	if manifest.Name == "" || manifest.Vert == "" {
+		return "", false, fmt.Errorf("%s names no template", path)
+	}
+	for _, capability := range manifest.Agent.Caps {
+		if capability == agent.CapRooted {
+			return "", false, nil
+		}
+	}
+	return manifest.Name + "@" + manifest.Vert, true, nil
 }
