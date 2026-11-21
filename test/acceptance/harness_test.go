@@ -39,7 +39,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -86,12 +85,6 @@ type host struct {
 	tokenFile string // an admin token, for the TCP listener
 	apiToken  string
 
-	// The exposure criterion's URL, kept so the removal criterion can check that the
-	// listener died with its sandbox: the two criteria are about one sandbox's life and
-	// they run in that order.
-	exposedURL      string
-	exposedPlainURL string
-
 	daemon  *exec.Cmd
 	logFile *os.File
 }
@@ -100,9 +93,15 @@ type host struct {
 // daemon, and waits until the daemon answers. It fails rather than skips when the
 // host cannot serve a sandbox: on this path a missing KVM, jailer or template is the
 // finding, not a reason to report success.
+// hostPrerequisite is what a run needs before it can start. It is a variable so the
+// harness's own behaviour — one criterion failing must not hide the ones after it — can
+// be tested on a machine that has no KVM, which is every machine the tests themselves
+// are written on.
+var hostPrerequisite = requireJailedHost
+
 func newHost(t *testing.T) *host {
 	t.Helper()
-	requireJailedHost(t)
+	hostPrerequisite(t)
 
 	h := &host{
 		t:         t,
@@ -531,6 +530,49 @@ func (h *host) tailDaemonLog() string {
 	return strings.Join(lines, "\n")
 }
 
+// templateRef is the template this run boots, as "name@version": `template inspect`
+// takes a ref, and a bare name is a usage error rather than a lookup.
+//
+// The version comes from the store's manifest for that name, so the run inspects exactly
+// the template a create resolves. It returns an error rather than failing the test: its
+// caller is the criterion that needs the ref, and that criterion is where the failure is
+// recorded.
+func (h *host) templateRef(t *testing.T) (string, error) {
+	t.Helper()
+	if strings.Contains(h.template, "@") {
+		return h.template, nil
+	}
+
+	matches, err := filepath.Glob(filepath.Join(h.goldenDir, "golden-"+h.template+"-*.json"))
+	if err != nil {
+		return "", err
+	}
+	if len(matches) == 0 {
+		return "", fmt.Errorf("the template store %s has no manifest named golden-%s-<version>.json",
+			h.goldenDir, h.template)
+	}
+
+	// The newest one, which is the version a create resolves when it names only the
+	// name: the store's rule is the newest manifest for a name.
+	newest := matches[0]
+	for _, match := range matches[1:] {
+		a, errA := os.Stat(match)
+		b, errB := os.Stat(newest)
+		if errA == nil && errB == nil && a.ModTime().After(b.ModTime()) {
+			newest = match
+		}
+	}
+
+	// "golden-sandbox-base-1.0.0.json" is <name>-<version>: the version is what follows
+	// the last hyphen of the base name.
+	name := strings.TrimSuffix(strings.TrimPrefix(filepath.Base(newest), "golden-"), ".json")
+	at := strings.LastIndex(name, "-")
+	if at <= 0 {
+		return "", fmt.Errorf("the manifest %s does not name a version", filepath.Base(newest))
+	}
+	return name[:at] + "@" + name[at+1:], nil
+}
+
 // host run helpers.
 
 func envOr(name, fallback string) string {
@@ -579,32 +621,4 @@ func hostCommand(t *testing.T, label, name string, args ...string) string {
 	}
 	t.Logf("[host] %s\n  $ %s %s\n  exit %d\n%s", label, name, strings.Join(args, " "), code, indent(string(out)))
 	return string(out)
-}
-
-// mu guards the evidence file writes: subtests that run in parallel would otherwise
-// interleave partial lines.
-var mu sync.Mutex
-
-// record appends one evidence line to the run's evidence file, which the workflow
-// uploads as an artifact. The test log is the primary record; this is what survives
-// a runner that truncates it.
-func record(t *testing.T, criterion, format string, args ...any) {
-	t.Helper()
-	line := fmt.Sprintf("%s\t%s\t%s\n", criterion, time.Now().UTC().Format(time.RFC3339),
-		fmt.Sprintf(format, args...))
-	t.Logf("[%s] %s", criterion, fmt.Sprintf(format, args...))
-
-	dir := os.Getenv(evidenceDirEnv)
-	if dir == "" {
-		return
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	f, err := os.OpenFile(filepath.Join(dir, "criteria.tsv"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		t.Logf("could not write the evidence file: %v", err)
-		return
-	}
-	defer func() { _ = f.Close() }()
-	_, _ = f.WriteString(line)
 }

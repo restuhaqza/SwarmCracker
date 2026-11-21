@@ -82,4 +82,12 @@ next run would inherit.
 
 The run's log and the criteria it recorded are uploaded as an artifact for 90 days,
 because the log is the evidence: it holds the commands, the guest's own output, and the
-host's answers.
+host's answers. `criteria.tsv` has one line per criterion, ending in `PASS`, `FAIL` or
+`NOT EVALUATED` with the reason, and the runner fails on any red or unmeasured one — a
+criterion that could not be evaluated is not a criterion that held.
+
+Every criterion stands alone: each creates what it needs and is recorded whatever it
+decides, so one red criterion does not hide the ones after it. The first run on the lab
+host lost seven criteria to a single failed assertion and reported that as one failure;
+that is why the harness is built this way, and why it has its own tests (which run without
+KVM, in `test/acceptance/harness_self_test.go`).

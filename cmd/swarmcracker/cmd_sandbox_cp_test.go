@@ -46,10 +46,10 @@ func TestSandboxCopyOutWritesAFile(t *testing.T) {
 	apiHost, apiCA = endpoint, caFile
 
 	target := filepath.Join(t.TempDir(), "main.go")
-	out, err := executeSandboxCommand(t, newSandboxCommand(), "cp", "sbx-1:workspace/main.go", target)
+	out, err := executeSandboxCommand(t, newSandboxCommand(), "cp", "sbx-1:main.go", target)
 	require.NoError(t, err)
 
-	assert.Equal(t, "GET /v1/sandboxes/sbx-1/files?path=workspace/main.go", asked)
+	assert.Equal(t, "GET /v1/sandboxes/sbx-1/files?path=main.go", asked)
 	body, err := os.ReadFile(target)
 	require.NoError(t, err)
 	assert.Equal(t, "package main\n", string(body))
@@ -64,13 +64,13 @@ func TestSandboxCopyOutExtractsATree(t *testing.T) {
 	resetAPIFlags(t)
 
 	archive := tarBytes(t, []tarEntry{
-		{name: "workspace/repo/", dir: true},
-		{name: "workspace/repo/README.md", body: "read me\n"},
-		{name: "workspace/repo/pkg/", dir: true},
-		{name: "workspace/repo/pkg/main.go", body: "package pkg\n"},
-		{name: "workspace/repo/link.go", link: "pkg/main.go"},
+		{name: "repo/", dir: true},
+		{name: "repo/README.md", body: "read me\n"},
+		{name: "repo/pkg/", dir: true},
+		{name: "repo/pkg/main.go", body: "package pkg\n"},
+		{name: "repo/link.go", link: "pkg/main.go"},
 		// A fifo cannot be created from an archive and is skipped, counted, not written.
-		{name: "workspace/repo/pipe", fifo: true},
+		{name: "repo/pipe", fifo: true},
 	})
 
 	endpoint, caFile := newAPITestServer(t, func(w http.ResponseWriter, r *http.Request) {
@@ -81,7 +81,7 @@ func TestSandboxCopyOutExtractsATree(t *testing.T) {
 	apiHost, apiCA = endpoint, caFile
 
 	target := filepath.Join(t.TempDir(), "repo")
-	out, err := executeSandboxCommand(t, newSandboxCommand(), "cp", "sbx-1:workspace/repo", target)
+	out, err := executeSandboxCommand(t, newSandboxCommand(), "cp", "sbx-1:repo", target)
 	require.NoError(t, err)
 
 	assert.Contains(t, out, "extracted 5 entries")
@@ -113,26 +113,26 @@ func TestSandboxCopyOutRefusesAnArchiveThatLeavesTheDestination(t *testing.T) {
 	}{
 		{
 			name:  "a name outside the tree that was asked for",
-			entry: tarEntry{name: "workspace/other/escape.txt", body: "nope\n"},
+			entry: tarEntry{name: "other/escape.txt", body: "nope\n"},
 		},
 		{
 			name:  "a name that climbs out of the destination",
-			entry: tarEntry{name: "workspace/repo/../../escape.txt", body: "nope\n"},
+			entry: tarEntry{name: "repo/../../escape.txt", body: "nope\n"},
 		},
 		{
 			name:  "a symbolic link out of the destination",
-			entry: tarEntry{name: "workspace/repo/out.go", link: "../../../etc/passwd"},
+			entry: tarEntry{name: "repo/out.go", link: "../../../etc/passwd"},
 		},
 		{
 			name:  "a hard link to something this archive did not write",
-			entry: tarEntry{name: "workspace/repo/hard.go", hardlink: "/etc/passwd"},
+			entry: tarEntry{name: "repo/hard.go", hardlink: "/etc/passwd"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			resetAPIFlags(t)
 
 			archive := tarBytes(t, []tarEntry{
-				{name: "workspace/repo/", dir: true},
+				{name: "repo/", dir: true},
 				tc.entry,
 			})
 			endpoint, caFile := newAPITestServer(t, func(w http.ResponseWriter, r *http.Request) {
@@ -144,7 +144,7 @@ func TestSandboxCopyOutRefusesAnArchiveThatLeavesTheDestination(t *testing.T) {
 
 			dir := t.TempDir()
 			target := filepath.Join(dir, "repo")
-			_, err := executeSandboxCommand(t, newSandboxCommand(), "cp", "sbx-1:workspace/repo", target)
+			_, err := executeSandboxCommand(t, newSandboxCommand(), "cp", "sbx-1:repo", target)
 			require.Error(t, err, "an archive that means \"write somewhere else\" is refused")
 
 			// Nothing was written outside the destination: a refusal is not a partial write
@@ -171,21 +171,21 @@ func TestSandboxCopyInSendsAFile(t *testing.T) {
 		contentType = r.Header.Get("Content-Type")
 		body, _ := io.ReadAll(r.Body)
 		received = string(body)
-		writeAPITestDocument(w, http.StatusOK, v1.NewSandboxFileWrite("workspace/main.go", int64(len(body)), 0, nil))
+		writeAPITestDocument(w, http.StatusOK, v1.NewSandboxFileWrite("main.go", int64(len(body)), 0, nil))
 	})
 	apiHost, apiCA = endpoint, caFile
 
 	local := filepath.Join(t.TempDir(), "main.go")
 	require.NoError(t, os.WriteFile(local, []byte("package main\n"), 0o600))
 
-	out, err := executeSandboxCommand(t, newSandboxCommand(), "cp", local, "sbx-1:workspace/main.go")
+	out, err := executeSandboxCommand(t, newSandboxCommand(), "cp", local, "sbx-1:main.go")
 	require.NoError(t, err)
 
-	assert.Equal(t, "PUT /v1/sandboxes/sbx-1/files?mode=0600&path=workspace/main.go", asked,
+	assert.Equal(t, "PUT /v1/sandboxes/sbx-1/files?mode=0600&path=main.go", asked,
 		"the local file's mode travels with it")
 	assert.Equal(t, "application/octet-stream", contentType)
 	assert.Equal(t, "package main\n", received)
-	assert.Contains(t, out, "wrote 13 bytes to sbx-1:workspace/main.go")
+	assert.Contains(t, out, "wrote 13 bytes to sbx-1:main.go")
 }
 
 // TestSandboxCopyInStreamsATree holds the upload's shape: a directory becomes a tar archive
@@ -202,7 +202,7 @@ func TestSandboxCopyInStreamsATree(t *testing.T) {
 	endpoint, caFile := newAPITestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		contentType = r.Header.Get("Content-Type")
 		names, contents = readTar(t, r.Body)
-		writeAPITestDocument(w, http.StatusOK, v1.NewSandboxFileWrite("workspace/repo", 20, len(names), nil))
+		writeAPITestDocument(w, http.StatusOK, v1.NewSandboxFileWrite("repo", 20, len(names), nil))
 	})
 	apiHost, apiCA = endpoint, caFile
 
@@ -212,15 +212,15 @@ func TestSandboxCopyInStreamsATree(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(local, "pkg", "main.go"), []byte("package pkg\n"), 0o644))
 	require.NoError(t, os.Symlink("pkg/main.go", filepath.Join(local, "link.go")))
 
-	out, err := executeSandboxCommand(t, newSandboxCommand(), "cp", local, "sbx-1:workspace/repo")
+	out, err := executeSandboxCommand(t, newSandboxCommand(), "cp", local, "sbx-1:repo")
 	require.NoError(t, err)
 
 	assert.Equal(t, "application/x-tar", contentType)
-	assert.Equal(t, []string{"workspace/repo", "workspace/repo/README.md", "workspace/repo/link.go",
-		"workspace/repo/pkg", "workspace/repo/pkg/main.go"}, names,
+	assert.Equal(t, []string{"repo", "repo/README.md", "repo/link.go",
+		"repo/pkg", "repo/pkg/main.go"}, names,
 		"every name is under the guest path that was asked for")
-	assert.Equal(t, "read me\n", contents["workspace/repo/README.md"])
-	assert.Equal(t, "pkg/main.go", contents["workspace/repo/link.go"])
+	assert.Equal(t, "read me\n", contents["repo/README.md"])
+	assert.Equal(t, "pkg/main.go", contents["repo/link.go"])
 	assert.Contains(t, out, "wrote 5 entries")
 }
 
@@ -231,7 +231,7 @@ func TestSandboxCopyNeedsExactlyOneSandbox(t *testing.T) {
 
 	for _, args := range [][]string{
 		{"./a", "./b"},
-		{"sbx-1:workspace/a", "sbx-2:workspace/b"},
+		{"sbx-1:a", "sbx-2:b"},
 	} {
 		_, err := executeSandboxCommand(t, newSandboxCommand(), append([]string{"cp"}, args...)...)
 		require.Error(t, err, args)
@@ -246,10 +246,10 @@ func TestSandboxCopyNeedsExactlyOneSandbox(t *testing.T) {
 		_, _, ok := splitSandboxRef(arg)
 		assert.False(t, ok, arg)
 	}
-	id, guestPath, ok := splitSandboxRef("sbx-1:/workspace/repo")
+	id, guestPath, ok := splitSandboxRef("sbx-1:/repo")
 	require.True(t, ok)
 	assert.Equal(t, "sbx-1", id)
-	assert.Equal(t, "workspace/repo", guestPath, "a leading slash is the workspace root")
+	assert.Equal(t, "repo", guestPath, "a leading slash is the workspace root")
 }
 
 // TestSandboxStatusPrintsTheGuestsOwnAnswer holds the command to what it promises: the
@@ -420,12 +420,12 @@ func TestStreamingATreeCompressesNothing(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(local, "a.txt"), []byte("hello\n"), 0o644))
 
 	var buf bytes.Buffer
-	skipped, err := streamLocalTree(&buf, local, "workspace/x")
+	skipped, err := streamLocalTree(&buf, local, "x")
 	require.NoError(t, err)
 	assert.Zero(t, skipped)
 
 	names, _ := readTar(t, bytes.NewReader(buf.Bytes()))
-	assert.Equal(t, []string{"workspace/x", "workspace/x/a.txt"}, names)
+	assert.Equal(t, []string{"x", "x/a.txt"}, names)
 
 	// The archive is not gzip: a gzip reader would fail on it, which is the observable
 	// difference for a guest that reads frames as they arrive.

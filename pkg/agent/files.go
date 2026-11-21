@@ -52,6 +52,7 @@ import (
 	"io/fs"
 	"os"
 	"path"
+	"path/filepath"
 	"sort"
 	"strings"
 	"syscall"
@@ -227,6 +228,196 @@ func openFileRoot() (*os.Root, error) {
 		return nil, classifyPathError(err)
 	}
 	return root, nil
+}
+
+// guestRead opens one file inside the workspace for reading.
+//
+// It is the read half of `get`, and it is the same seam `stat`, `list`, `tar` and
+// `untar` use: the path is confined lexically first — so an absolute name, or a ".."
+// that leaves the root, is refused with unsafe_path rather than reported as a missing
+// file — and then opened through os.Root, which is what enforces the boundary for
+// everything subtler, a link whose target is outside the workspace above all.
+//
+// Both halves are load-bearing and neither is decorative: confine alone would be
+// fooled by a link, and os.Root alone would report an escaping path as not_found,
+// which a caller branching on the code could not tell from a typo.
+func guestRead(rel string, rooted bool) (io.ReadCloser, error) {
+	if !rooted {
+		return plainOpen(rel)
+	}
+	clean, err := confine(rel)
+	if err != nil {
+		return nil, err
+	}
+	root, err := openFileRoot()
+	if err != nil {
+		return nil, err
+	}
+	file, err := root.Open(clean)
+	if err != nil {
+		_ = root.Close()
+		return nil, classifyPathError(err)
+	}
+	return &rootedFile{root: root, file: file}, nil
+}
+
+// rootedFile is a file opened through a root, closed together with it: the root holds
+// the descriptor the path was resolved against, so closing the file alone would leak
+// it.
+type rootedFile struct {
+	root *os.Root
+	file *os.File
+}
+
+func (r *rootedFile) Read(p []byte) (int, error) { return r.file.Read(p) }
+
+func (r *rootedFile) Close() error {
+	err := r.file.Close()
+	if closeErr := r.root.Close(); err == nil {
+		err = closeErr
+	}
+	return err
+}
+
+// guestWrite is the write half of `put`: a file being written inside the workspace.
+//
+// The bytes go to a temporary name beside the destination and are renamed onto it only
+// by Commit, so a transfer that stops early cannot truncate a file that was already
+// there. Both names are resolved by the root, so neither can land outside it: a
+// destination whose parent is a link out of the workspace is refused when the parent
+// is made, not when the rename happens.
+//
+// The caller writes and then either Commits or Aborts; Abort is what a defer wants,
+// because it is a no-op after a successful Commit.
+type guestWrite struct {
+	root *os.Root
+	file *os.File
+	tmp  string
+	dest string
+}
+
+// createGuestFile opens rel for writing inside the workspace, creating its parent
+// directory inside the root if it is not there.
+func createGuestFile(rel string, mode os.FileMode, rooted bool) (*guestWrite, error) {
+	if !rooted {
+		return plainCreate(rel, mode)
+	}
+	clean, err := confine(rel)
+	if err != nil {
+		return nil, err
+	}
+	root, err := openFileRoot()
+	if err != nil {
+		return nil, err
+	}
+
+	if dir := path.Dir(clean); dir != "" && dir != "." {
+		if err := root.MkdirAll(dir, 0o755); err != nil {
+			_ = root.Close()
+			return nil, classifyPathError(err)
+		}
+	}
+
+	w := &guestWrite{root: root, tmp: clean + putTempSuffix, dest: clean}
+	file, err := root.OpenFile(w.tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	if err != nil {
+		_ = root.Close()
+		return nil, classifyPathError(err)
+	}
+	w.file = file
+	return w, nil
+}
+
+func (w *guestWrite) Write(p []byte) (int, error) { return w.file.Write(p) }
+
+// Commit closes the file, applies the mode and renames it onto its destination. It is
+// the only path that makes the write visible.
+func (w *guestWrite) Commit(mode os.FileMode) error {
+	if err := w.file.Close(); err != nil {
+		w.closeRoot()
+		return classifyPathError(err)
+	}
+	// The mode is set explicitly because OpenFile honours it only on create, and the
+	// destination may already have existed with another one.
+	if err := w.chmod(mode); err != nil {
+		w.closeRoot()
+		return classifyPathError(err)
+	}
+	err := w.rename()
+	w.closeRoot()
+	if err != nil {
+		return classifyPathError(err)
+	}
+	return nil
+}
+
+// Abort discards the write. It is a no-op after Commit, so it is what a defer calls.
+func (w *guestWrite) Abort() {
+	_ = w.file.Close()
+	w.remove()
+	w.closeRoot()
+}
+
+// The three operations a commit needs, on whichever plane the write was opened in.
+func (w *guestWrite) chmod(mode os.FileMode) error {
+	if w.root == nil {
+		return os.Chmod(w.tmp, mode)
+	}
+	return w.root.Chmod(w.tmp, mode)
+}
+
+func (w *guestWrite) rename() error {
+	if w.root == nil {
+		return os.Rename(w.tmp, w.dest)
+	}
+	return w.root.Rename(w.tmp, w.dest)
+}
+
+func (w *guestWrite) remove() {
+	if w.root == nil {
+		_ = os.Remove(w.tmp)
+		return
+	}
+	_ = w.root.Remove(w.tmp)
+}
+
+func (w *guestWrite) closeRoot() {
+	if w.root != nil {
+		_ = w.root.Close()
+	}
+}
+
+// putTempSuffix is the name a `put` writes under before renaming onto its destination.
+const putTempSuffix = ".sc-put-tmp"
+
+// plainOpen and plainCreate are the unrooted plane: the guest path is the guest's own,
+// taken as written.
+//
+// It is what `vm cp` and the task file routes mean, and it is kept because those
+// callers name absolute guest paths by design and have no scoped credential in front of
+// them. The sandbox plane never comes through here: its credential reaches one
+// workspace, so its operations are rooted (see the Rooted field on Request).
+func plainOpen(path string) (io.ReadCloser, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, classifyPathError(err)
+	}
+	return file, nil
+}
+
+func plainCreate(path string, mode os.FileMode) (*guestWrite, error) {
+	if dir := filepath.Dir(path); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, classifyPathError(err)
+		}
+	}
+	w := &guestWrite{tmp: path + putTempSuffix, dest: path}
+	file, err := os.OpenFile(w.tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	if err != nil {
+		return nil, classifyPathError(err)
+	}
+	w.file = file
+	return w, nil
 }
 
 // statGuestFile describes the entry at rel as it is on disk.

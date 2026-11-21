@@ -122,9 +122,31 @@ if [ -n "${ADDED}" ]; then
 fi
 say "==> no namespace, preview listener or VMM of this run remains"
 
+# The ledger is what the run is read from: one line per criterion, PASS, FAIL or
+# NOT EVALUATED. The test binary's exit status cannot say which criterion was red and
+# which never ran, and it cannot say whether a red one hid the rest.
+LEDGER="${EVIDENCE_DIR}/criteria.tsv"
+if [ ! -s "${LEDGER}" ]; then
+	say "FAIL: the run recorded no criteria, so nothing it did can be claimed (see acceptance.log)"
+	exit 1
+fi
+
+PASSED=$(grep -c $'\tPASS$' "${LEDGER}" || true)
+FAILED=$(grep -c $'\tFAIL$' "${LEDGER}" || true)
+MISSING=$(grep -c $'\tNOT EVALUATED' "${LEDGER}" || true)
+
+say "==> criteria: ${PASSED} passed, ${FAILED} failed, ${MISSING} not evaluated"
+grep $'\tFAIL$' "${LEDGER}" | while IFS= read -r line; do say "    FAILED: ${line}"; done
+grep $'\tNOT EVALUATED' "${LEDGER}" | while IFS= read -r line; do say "    NOT EVALUATED: ${line}"; done
+
+if [ "${FAILED}" -ne 0 ] || [ "${MISSING}" -ne 0 ]; then
+	say "FAIL: ${FAILED} criterion/criteria failed and ${MISSING} could not be evaluated (see criteria.tsv)"
+	exit 1
+fi
+
 if [ "${TEST_STATUS}" -ne 0 ]; then
-	say "FAIL: the acceptance run exited ${TEST_STATUS} (see acceptance.log)"
+	say "FAIL: the acceptance run exited ${TEST_STATUS} although its ledger has no red criterion (see acceptance.log)"
 	exit "${TEST_STATUS}"
 fi
 
-say "PASS: the MVP's criteria all held on this host"
+say "PASS: ${PASSED} criteria all held on this host"

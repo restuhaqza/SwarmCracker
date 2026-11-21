@@ -414,25 +414,45 @@ func TestClientExecNonTTYStdinRejected(t *testing.T) {
 	assert.Equal(t, "ok\n", stdout.String())
 }
 
+// TestClientCopyToAndCopyFrom drives both file transfers over a real connection, and
+// holds them to the one path rule every guest file operation shares: the path is
+// relative to the workspace root, and the file lands inside it.
+//
+// It used to pass an absolute path into a temp directory — which is exactly the hole
+// this test now closes: `put` and `get` reached outside the workspace, so a
+// `sandboxes:files` credential could read and write the guest's own files.
 func TestClientCopyToAndCopyFrom(t *testing.T) {
+	root := withFileRoot(t)
 	_, uds := startProxy(t, DefaultPort)
 	c, err := Dial(context.Background(), uds, DefaultPort)
 	require.NoError(t, err)
 	defer func() { _ = c.Close() }()
 
-	path := filepath.Join(t.TempDir(), "uploaded.txt")
-	require.NoError(t, c.CopyTo(context.Background(), path, strings.NewReader("payload"), 0o600))
+	require.NoError(t, c.CopyToRooted(context.Background(), "nested/uploaded.txt", strings.NewReader("payload"), 0o600))
 
+	path := filepath.Join(root, "nested", "uploaded.txt")
 	got, err := os.ReadFile(path)
 	require.NoError(t, err)
-	assert.Equal(t, "payload", string(got))
+	assert.Equal(t, "payload", string(got), "the file landed inside the workspace")
 	info, err := os.Stat(path)
 	require.NoError(t, err)
 	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
 
 	var buf bytes.Buffer
-	require.NoError(t, c.CopyFrom(context.Background(), path, &buf))
+	require.NoError(t, c.CopyFromRooted(context.Background(), "nested/uploaded.txt", &buf))
 	assert.Equal(t, "payload", buf.String())
+
+	// Neither half reaches outside the root, and the refusal is the typed one a caller
+	// branches on rather than a message it has to read.
+	for _, outside := range []string{"../escape.txt", "/etc/passwd"} {
+		err = c.CopyToRooted(context.Background(), outside, strings.NewReader("x"), 0o600)
+		require.Error(t, err, "put must refuse %q", outside)
+		assert.Equal(t, CodeUnsafePath, CodeOf(err), "put %q: %v", outside, err)
+
+		err = c.CopyFromRooted(context.Background(), outside, &bytes.Buffer{})
+		require.Error(t, err, "get must refuse %q", outside)
+		assert.Equal(t, CodeUnsafePath, CodeOf(err), "get %q: %v", outside, err)
+	}
 }
 
 func TestClientCopyToEmptyPath(t *testing.T) {
@@ -452,8 +472,9 @@ func TestClientCopyFromMissingFile(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = c.Close() }()
 
+	withFileRoot(t)
 	var buf bytes.Buffer
-	err = c.CopyFrom(context.Background(), filepath.Join(t.TempDir(), "nope"), &buf)
+	err = c.CopyFromRooted(context.Background(), "nope", &buf)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "copy:")
 }
@@ -818,10 +839,10 @@ func TestClientCopyFromWriteError(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = c.Close() }()
 
-	path := filepath.Join(t.TempDir(), "download.txt")
-	require.NoError(t, os.WriteFile(path, []byte("data"), 0o644))
+	root := withFileRoot(t)
+	require.NoError(t, os.WriteFile(filepath.Join(root, "download.txt"), []byte("data"), 0o644))
 
-	err = c.CopyFrom(context.Background(), path, errWriter{err: errors.New("sink full")})
+	err = c.CopyFromRooted(context.Background(), "download.txt", errWriter{err: errors.New("sink full")})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "write destination")
 }
