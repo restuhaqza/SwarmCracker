@@ -122,7 +122,26 @@ func TestBuilder_RecordsAgentVersionFromHello(t *testing.T) {
 
 	md, err := ReadMetadata(res.MetadataPath)
 	require.NoError(t, err)
+	// The digest is asserted separately below, so this compares the fields the
+	// hello produced.
+	md.Agent.Digest = ""
 	assert.Equal(t, AgentPin{Protocol: agent.Version, Version: "v9.9.9", Caps: agent.Capabilities()}, md.Agent)
+}
+
+// TestBuilder_RecordsTheEmbeddedAgentDigest proves the manifest names the agent
+// bytes it was built with, which is the only thing that lets a later build tell
+// an unchanged recipe over a changed agent from a plain reread (reuse cannot see
+// the agent in the recipe digest).
+func TestBuilder_RecordsTheEmbeddedAgentDigest(t *testing.T) {
+	h := newHarness(t, false)
+
+	res, err := h.builder.Build(context.Background(), mustRecipe(t, validRecipeYAML))
+	require.NoError(t, err)
+
+	md, err := ReadMetadata(res.MetadataPath)
+	require.NoError(t, err)
+	assert.Equal(t, AgentDigest(), md.Agent.Digest)
+	assert.NotEmpty(t, md.Agent.Digest)
 }
 
 // TestBuilder_RefusesPinnedVersionThatDiffers proves an explicit recipe pin is

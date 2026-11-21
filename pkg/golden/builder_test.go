@@ -128,8 +128,15 @@ type harness struct {
 
 func newHarness(t *testing.T, force bool) *harness {
 	t.Helper()
+	return newHarnessIn(t, t.TempDir(), force)
+}
+
+// newHarnessIn is newHarness over an output directory the caller owns, for a test
+// that has to build twice into one store with different settings.
+func newHarnessIn(t *testing.T, outDir string, force bool) *harness {
+	t.Helper()
 	h := &harness{
-		outDir:     t.TempDir(),
+		outDir:     outDir,
 		hostPin:    checkpoint.Pin{Firecracker: "v1.15.1", Kernel: strings.Repeat("a", 64)},
 		baseDigest: "sha256:" + strings.Repeat("b", 64),
 	}

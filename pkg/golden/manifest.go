@@ -140,6 +140,52 @@ func (e *PinMismatchError) Unwrap() error { return checkpoint.ErrPinMismatch }
 // message text.
 func (e *PinMismatchError) Code() string { return CodeTemplatePinMismatch }
 
+// CodeTemplateAgentStale is the stable code for a build that would reuse a
+// template whose embedded guest agent is not the one this tree carries. It is
+// the contract; the message next to it is not.
+const CodeTemplateAgentStale = "template_agent_stale"
+
+// AgentStaleError reports a `template build` that found an up-to-date artifact
+// whose guest agent is a different build from the one in this tree.
+//
+// It is the reuse case, and it is an error rather than a rebuild for two
+// reasons. A silent rebuild would replace a template somebody may still need —
+// criterion 3b of the MVP's acceptance run boots one deliberately, because a
+// template that predates a capability is the case that proves the capability
+// gate. And a silent reuse, which is what the builder did before this check,
+// hands back a template whose agent predates the code with nothing in the
+// manifest to say so: the build succeeds, `template inspect` reports the old
+// agent as if it were current, and the first symptom is an operation the guest
+// refuses.
+//
+// The message ends with what to do about it, because an operator meets it in a
+// build log with no other context: build a new version of the template (which is
+// what the acceptance run does, so the old artifact survives for criterion 3b),
+// or pass --force when replacing this version is what was meant.
+type AgentStaleError struct {
+	// Template names the template ("name@version") the artifact belongs to.
+	Template string
+	// Recorded is the agent digest the template was built with; Want is the
+	// embedded agent's digest in this tree. Either may be empty for a template
+	// built before the digest was recorded.
+	Recorded string
+	Want     string
+}
+
+// Error implements error.
+func (e *AgentStaleError) Error() string {
+	recorded := e.Recorded
+	if recorded == "" {
+		recorded = "an agent built before this was recorded"
+	}
+	return fmt.Sprintf("%s: %s was built with a different guest agent (%s) than this tree carries (%s): the recipe is unchanged, but the agent is not — build a new version of the template, or pass --force to rebuild this one",
+		CodeTemplateAgentStale, templateName(e.Template), recorded, e.Want)
+}
+
+// Code returns the stable failure code, so a caller can branch without matching
+// message text.
+func (e *AgentStaleError) Code() string { return CodeTemplateAgentStale }
+
 // templateName names a template in a message, without inventing one for a
 // zero value.
 func templateName(name string) string {
