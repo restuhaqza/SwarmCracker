@@ -27,6 +27,7 @@ process cannot obtain the agent's credential, and `rm` frees every resource it n
 | 1 (cold) | creates a sandbox and checks the node's own ready window against 4 s. The ≤500 ms **warm** half is a pool and is not measured — there is none |
 | 2 | `exec` returns stdout, stderr and the guest's exit code, separately |
 | 3 | `cp` writes a tree into `/workspace`, `exec` reads it back, and it copies out again |
+| 3b | the same `cp` against a template whose guest agent predates the `rooted` capability is refused and writes nothing |
 | 4 | `expose` gives an authenticated URL: 200 with its token, 401 without it, dead once un-exposed or removed |
 | 5 | egress `none`: no DNS answer, no path to another sandbox, none to the host's address, none to the internet |
 | 6 | `checkpoint` then `fork --count 2` yields three sandboxes with distinct namespaces and addresses, whose writes do not leak either way |

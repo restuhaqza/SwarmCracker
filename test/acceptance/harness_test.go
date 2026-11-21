@@ -235,7 +235,7 @@ func binaryPath(t *testing.T, env, fallback string) string {
 		return path
 	}
 	path, err := exec.LookPath(fallback)
-	require.NoError(t, err, "%s is not on PATH and %s is not set: build it first (make all)", fallback, env)
+	require.NoError(t, err, "%s is not on PATH and %s is not set: build it from this checkout first (go build -o build/%s ./cmd/%s)", fallback, env, fallback, fallback)
 	return path
 }
 
