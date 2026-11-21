@@ -58,6 +58,14 @@ jobs:
       - name: Vet
         run: go vet ./pkg/... ./cmd/...
 
+      # The host-evidence acceptance package is behind a `acceptance` build tag, so
+      # nothing else compiles it: without this step it would rot silently and the one
+      # path that proves the MVP on a real host would be found broken when it is
+      # dispatched. This compiles and vets it; it does not run it, because running it
+      # needs KVM.
+      - name: Vet the host acceptance package
+        run: go vet -tags=acceptance ./test/acceptance/
+
       - name: Test (all packages, with race detector)
         run: go test -short -race -coverprofile=coverage.out -covermode=atomic ./pkg/...
 
