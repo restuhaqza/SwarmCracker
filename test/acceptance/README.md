@@ -10,18 +10,80 @@ into the lab host. See
 [docs-site/src/content/docs/contributing/testing/host-evidence.md](../../docs-site/src/content/docs/contributing/testing/host-evidence.md)
 for the criteria it covers and what it will not claim.
 
+## What each criterion is called
+
+Each line of `criteria.tsv` names the epic criterion (#121) it settles, so a red line reads
+without a lookup. `3b` is the older-template half of criterion 3, and `run-clean` is the
+run's own promise to the host rather than a criterion from the epic.
+
+| `criteria.tsv` id | Epic criterion (#121) |
+|---|---|
+| `1-cold-create` | 1 — a cold create is ready within 4 s and reports its timings (the warm half is a pool; not measured) |
+| `2-exec` | 2 — `exec` returns stdout, stderr and the exit code, separately |
+| `3-cp` | 3 — `cp` moves a tree into the workspace and `exec` sees it |
+| `3b-cp-old-template` | 3 — the same copy against a template whose agent predates `rooted` must be refused and write nothing |
+| `4-expose` | 4 — `expose` gives an authenticated URL: 200 with its token, 401 without, dead after delete |
+| `5-egress-none` | 5 — `egress: none` resolves no DNS and reaches no peer, host gateway or internet |
+| `6-checkpoint-fork` | 6 — `checkpoint` + `fork --count 2` yields three isolated sandboxes |
+| `8-rm` | 8 — `DELETE` frees process, jail, netns, TAP, cgroup, disk, token and record |
+| `9-scoped-token` | 9 — a sandbox token cannot exec elsewhere, list, or mint tokens |
+| `11-template-agent` | 11 — every template answers `hello` with protocol and capabilities; one without an agent is refused |
+| `12-auth` | 12 — a non-root guest process cannot become root, and an unauthenticated host dial is rejected |
+| `run-clean` | — the run added no namespace, listener or VMM to the host |
+
+Criteria 7 (idle TTL pause/resume) and 10 (node loss, cross-node restore) have no line here:
+they are outside the MVP, so this run neither measures nor claims them.
+
 ## Running it by hand
 
-On a KVM host, as root, from the repository root:
+On a KVM host, as root, from a clean checkout of the commit under test:
 
 ```bash
-make all
+# The two binaries the run drives. `make all` does not build sandboxd, so name it.
+go build -o build/sandboxd ./cmd/sandboxd
+go build -o build/swarmcracker ./cmd/swarmcracker
+
 sudo env \
   SANDBOXD_BIN="$PWD/build/sandboxd" \
   SWARMCRACKER_BIN="$PWD/build/swarmcracker" \
   SWARMCRACKER_TEST_TEMPLATE=sandbox-base \
   SWARMCRACKER_GOLDEN_DIR=/var/lib/firecracker/golden \
+  SWARMCRACKER_TEST_EVIDENCE="$PWD/.host-evidence" \
   go test -tags=acceptance -count=1 -timeout 40m -v ./test/acceptance/
+```
+
+`SANDBOXD_BIN` and `SWARMCRACKER_BIN` are not optional on a host that has other builds
+installed: unset, the run resolves each name on `PATH` and exercises whatever is there
+instead of the checkout. `SWARMCRACKER_TEST_EVIDENCE` is what produces `criteria.tsv`; unset,
+the run still passes or fails but leaves the ledger that a run is read from unwritten.
+
+### The template must be built from the commit under test
+
+A template carries the guest agent embedded when it was built, so a template built before
+this commit drives that commit's agent — and a `cp` to an agent without `untar` or `rooted`
+is refused, which is the capability gate working rather than a bug. Criterion 3 needs a
+template built from this tree.
+
+Two things make that easy to get wrong on a host that already holds one:
+
+- `template build` **reuses** an artifact whose recipe digest and host pin match, and the
+  recipe digest does not include the guest agent binary. A plain `template build
+  recipes/sandbox-base.yaml` on a host that already has `sandbox-base@1.0.0` prints
+  `Reused sandbox-base@1.0.0 (up to date)` and keeps the stale agent.
+- `--force` does rebuild, but it overwrites the artifact at the same path, and the older
+  template is exactly what criterion `3b` needs.
+
+So build the fresh template under a new version and leave the old one in place:
+
+```bash
+sed 's/^  version: 1\.0\.0$/  version: 1.1.0/' recipes/sandbox-base.yaml \
+  > /var/tmp/sandbox-base-1.1.0.yaml
+# A build boots the artifact it sealed to hold its agent to the v2 handshake, so it needs
+# KVM and root, and it writes into the store the run reads (/var/lib/firecracker/golden).
+sudo ./build/swarmcracker template build /var/tmp/sandbox-base-1.1.0.yaml
+
+# then run with SWARMCRACKER_TEST_TEMPLATE=sandbox-base@1.1.0, and 3b finds the
+# older sandbox-base@1.0.0 by itself.
 ```
 
 The run creates its own state directory, socket, jail base and rootfs under one scratch
