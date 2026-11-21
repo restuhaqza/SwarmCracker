@@ -444,3 +444,98 @@ func (c *checkpointFixture) storeIDs(t *testing.T) []string {
 	sort.Strings(ids)
 	return ids
 }
+
+// TestCreateIsRefusedForALifetimeTheNodeWillNotGrant is the lifetime ceiling's promise,
+// held the same way the quota's is: a create that asks for more life than this node
+// grants is refused while it still holds nothing — no record, no namespace, no disk and
+// no VM — and it is refused rather than quietly shortened, because a sandbox whose work
+// vanishes an hour early is worse than one that was never started.
+func TestCreateIsRefusedForALifetimeTheNodeWillNotGrant(t *testing.T) {
+	f := newFixtureWith(t, func(cfg *Config) {
+		cfg.MaxTTL = time.Hour
+	})
+	ctx := context.Background()
+
+	rec, err := f.manager.Create(ctx, CreateRequest{
+		Template: "base", ID: "sbx-1", Owner: "ci", MaxTTL: 2 * time.Hour,
+	})
+	require.Error(t, err, "two hours is longer than this node grants")
+	require.Empty(t, rec, "a refused create returns no sandbox to reason about")
+
+	var tooLong *MaxTTLError
+	require.ErrorAs(t, err, &tooLong)
+	assert.ErrorIs(t, err, ErrInvalid, "a lifetime the node cannot grant is a bad request, not exhaustion")
+	assert.Equal(t, 2*time.Hour, tooLong.Requested)
+	assert.Equal(t, time.Hour, tooLong.Limit)
+	assert.Contains(t, tooLong.Error(), "1h0m0s", "the refusal says what the node allows")
+
+	_, found, err := f.store.Get("sbx-1")
+	require.NoError(t, err)
+	assert.False(t, found, "a create refused for its lifetime writes no record")
+	assert.Empty(t, f.network.attached, "a create refused for its lifetime attaches no namespace")
+	assert.Empty(t, f.launcher.requests, "a create refused for its lifetime launches no VM")
+	_, statErr := os.Stat(f.manager.diskPath("sbx-1"))
+	assert.True(t, os.IsNotExist(statErr), "a create refused for its lifetime materializes no disk")
+
+	// A negative lifetime is not a ceiling refusal at all: there is no request it could
+	// be, so it is refused as an impossible input.
+	_, err = f.manager.Create(ctx, CreateRequest{Template: "base", ID: "sbx-2", MaxTTL: -time.Minute})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalid)
+	assert.NotErrorAs(t, err, &tooLong, "a negative request is not a lifetime longer than the ceiling")
+
+	// And the same node grants a lifetime that fits.
+	granted, err := f.manager.Create(ctx, CreateRequest{Template: "base", ID: "sbx-3", MaxTTL: 30 * time.Minute})
+	require.NoError(t, err)
+	assert.Equal(t, int64(1800), granted.MaxTTLSeconds, "the granted lifetime is on the record")
+}
+
+// TestAdmittedLifetimeIsTheNodesCeilingWhenNothingIsAsked pins what a create that names
+// no maximum gets, which is the value that decides the record: on a node with a ceiling
+// it is the ceiling — not "no maximum", because "I did not say" is not "let it live
+// forever" — and on a node without one it is nothing at all. The lifetime on the record
+// is the sandbox's own deadline and is what survives a restart of the node.
+func TestAdmittedLifetimeIsTheNodesCeilingWhenNothingIsAsked(t *testing.T) {
+	cases := []struct {
+		name    string
+		ceiling time.Duration
+		request time.Duration
+		want    int64
+	}{
+		{"a node with no ceiling grants nothing", 0, 0, 0},
+		{"a node with no ceiling grants what was asked", 0, 30 * time.Minute, 1800},
+		{"a ceiling applies to a create that asked for nothing", time.Hour, 0, 3600},
+		{"a request inside the ceiling is granted as asked", time.Hour, 30 * time.Minute, 1800},
+		{"a request exactly at the ceiling is admitted", time.Hour, time.Hour, 3600},
+		// A record counts its lifetime in whole seconds, and a positive request that
+		// rounds down to zero would mean "no maximum at all" — the opposite of what a
+		// caller who asked for a limit asked for.
+		{"a sub-second request is rounded up, not down", 0, 500 * time.Millisecond, 1},
+		{"a sub-second request under a ceiling is rounded up too", time.Hour, 500 * time.Millisecond, 1},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixtureWith(t, func(cfg *Config) { cfg.MaxTTL = tc.ceiling })
+
+			rec, err := f.manager.Create(context.Background(), CreateRequest{
+				Template: "base", ID: "sbx-1", MaxTTL: tc.request,
+			})
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, rec.MaxTTLSeconds)
+			if tc.want == 0 {
+				assert.True(t, rec.MaxDeadline().IsZero(), "a sandbox with no maximum has no deadline to report")
+			} else {
+				assert.Equal(t, rec.Created.Add(time.Duration(tc.want)*time.Second), rec.MaxDeadline())
+			}
+
+			// What the store serves is what the manager admitted: the deadline is read
+			// back from the record rather than recomputed from the node's configuration,
+			// which is what a restart does.
+			stored, found, err := f.store.Get("sbx-1")
+			require.NoError(t, err)
+			require.True(t, found)
+			assert.Equal(t, tc.want, stored.MaxTTLSeconds)
+		})
+	}
+}

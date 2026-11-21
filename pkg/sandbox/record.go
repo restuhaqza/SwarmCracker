@@ -173,6 +173,15 @@ type Record struct {
 	// it back. Zero means the sandbox is never reaped, which is a deliberate choice
 	// a caller can make.
 	IdleTTLSeconds int64 `json:"idleTtlSeconds"`
+	// MaxTTLSeconds is how long the sandbox may exist at all, measured from
+	// Created, whatever it does in between. It is the second deadline a sandbox may
+	// carry, and the one no exec can push back: the idle TTL above is reset by use,
+	// this one is not. Zero means the sandbox has no such limit, which is what a
+	// node that configured none gives. It is on the record rather than in the
+	// node's configuration alone because it is the sandbox's own deadline: a node
+	// that restarts, or is reconfigured, still holds every sandbox to the life it
+	// was admitted with.
+	MaxTTLSeconds int64 `json:"maxTtlSeconds,omitempty"`
 	// ReadyAt is when the guest answered. It is zero until it does, and it is what
 	// makes "how long did create take" a measurement rather than a target.
 	ReadyAt time.Time `json:"readyAt,omitempty"`
@@ -339,6 +348,93 @@ func (r Record) Idle(now time.Time) bool {
 	return ttl > 0 && r.IdleFor(now) >= ttl
 }
 
+// IdleDeadline is when the idle TTL runs out, or the zero time when the sandbox has
+// no idle TTL to run out.
+func (r Record) IdleDeadline() time.Time {
+	ttl := r.TTL()
+	if ttl == 0 || r.LastActive.IsZero() {
+		return time.Time{}
+	}
+	return r.LastActive.Add(ttl)
+}
+
+// MaxTTL is how long this sandbox may exist at all, from its creation. Zero means no
+// limit.
+func (r Record) MaxTTL() time.Duration {
+	if r.MaxTTLSeconds <= 0 {
+		return 0
+	}
+	return time.Duration(r.MaxTTLSeconds) * time.Second
+}
+
+// MaxDeadline is when the sandbox's maximum lifetime runs out, or the zero time when
+// it has none. It is an instant rather than a duration so a reader can put it beside
+// the idle deadline, and so a node that restarts keeps the deadline the sandbox was
+// admitted with rather than starting the clock again.
+func (r Record) MaxDeadline() time.Time {
+	ttl := r.MaxTTL()
+	if ttl == 0 || r.Created.IsZero() {
+		return time.Time{}
+	}
+	return r.Created.Add(ttl)
+}
+
+// MaxExpired reports whether the sandbox has outlived its maximum lifetime at now.
+// Nothing the caller does moves this deadline: it is measured from Created.
+func (r Record) MaxExpired(now time.Time) bool {
+	deadline := r.MaxDeadline()
+	return !deadline.IsZero() && !now.Before(deadline)
+}
+
+// Deadline is when this sandbox is taken back if nothing else changes: its idle deadline,
+// its maximum lifetime, or whichever comes first, because that is the limit that decides.
+// The zero time means it has neither, and then only removing it ends it.
+//
+// It is the sandbox's own deadline and not a duration, which is what a reader that has to
+// bound something else by the sandbox's life needs — a token bound to a sandbox, above all.
+func (r Record) Deadline() time.Time {
+	idle, max := r.IdleDeadline(), r.MaxDeadline()
+	switch {
+	case idle.IsZero():
+		return max
+	case max.IsZero():
+		return idle
+	case max.Before(idle):
+		return max
+	}
+	return idle
+}
+
+// The two limits a sandbox can reach, as ReapDue reports them.
+const (
+	// ReapLimitIdle is the limit a sandbox reached by sitting unused past its idle
+	// TTL — the limit an exec pushes back.
+	ReapLimitIdle = "idle"
+	// ReapLimitMax is the limit a sandbox reached by outliving its maximum lifetime,
+	// which an exec cannot push back.
+	ReapLimitMax = "max_ttl"
+)
+
+// ReapDue reports which limit takes this sandbox back at now, and whether one does.
+// A sandbox past both is reported against the limit whose deadline came first, because
+// that is the limit that took it: the idle TTL and the maximum lifetime run side by
+// side, and whichever is reached first is the one that decides.
+func (r Record) ReapDue(now time.Time) (string, bool) {
+	maxDue, idleDue := r.MaxExpired(now), r.Idle(now)
+	switch {
+	case maxDue && idleDue:
+		if r.MaxDeadline().Before(r.IdleDeadline()) {
+			return ReapLimitMax, true
+		}
+		return ReapLimitIdle, true
+	case maxDue:
+		return ReapLimitMax, true
+	case idleDue:
+		return ReapLimitIdle, true
+	}
+	return "", false
+}
+
 // ReadyAtDuration is how long the sandbox took to become ready, or zero if it never
 // did.
 func (r Record) ReadyAtDuration() time.Duration {
@@ -376,6 +472,9 @@ func (r Record) validate() error {
 	}
 	if r.IdleTTLSeconds < 0 {
 		return fmt.Errorf("sandbox: record %q has a negative idle TTL", r.ID)
+	}
+	if r.MaxTTLSeconds < 0 {
+		return fmt.Errorf("sandbox: record %q has a negative maximum lifetime", r.ID)
 	}
 
 	for _, field := range []struct {

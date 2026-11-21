@@ -466,6 +466,11 @@ type ForkRequest struct {
 	// TTL is the clones' idle TTL. Zero means the node's default; a negative value
 	// means never reap them.
 	TTL time.Duration
+	// MaxTTL is how long each clone may exist at all, from its creation. Zero means
+	// the node's ceiling, and a request longer than that ceiling is refused
+	// (MaxTTLError) rather than shortened; a negative value is refused. It is
+	// admitted with the rest of the fork, before a clone's record exists.
+	MaxTTL time.Duration
 	// IDs names the clones, in order. Empty mints them. A caller that supplies them
 	// must supply `Count` of them, because a fork that named some of its clones and
 	// minted others would be two rules in one call.
@@ -498,6 +503,9 @@ func (m *Manager) ForkFromSandbox(ctx context.Context, sandboxID string, req For
 				owner = rec.Owner
 			}
 			if err := m.admitClones(m.size(rec.VCPUs, rec.MemoryMB), rec.Disk, count, owner); err != nil {
+				return nil, err
+			}
+			if _, err := m.admitLifetime(req.MaxTTL); err != nil {
 				return nil, err
 			}
 		}
@@ -563,8 +571,14 @@ func (m *Manager) Fork(ctx context.Context, req ForkRequest) ([]Record, error) {
 
 	// Every clone is admitted, as a whole, before a byte of the fork is materialized: the
 	// images are staged and each clone gets a disk, so a fork the node cannot take must be
-	// refused while it still holds nothing at all.
+	// refused while it still holds nothing at all. The lifetime is admitted here too: a
+	// clone of a sandbox that may live a day is a sandbox that may live a day, and asking
+	// for more than this node grants is refused before any clone exists.
 	if err := m.admitClones(m.size(chk.VCPUs, chk.MemoryMB), chk.Disk, count, owner); err != nil {
+		return nil, err
+	}
+	maxTTL, err := m.admitLifetime(req.MaxTTL)
+	if err != nil {
 		return nil, err
 	}
 
@@ -580,7 +594,7 @@ func (m *Manager) Fork(ctx context.Context, req ForkRequest) ([]Record, error) {
 		if len(req.IDs) != 0 {
 			requested = req.IDs[i]
 		}
-		rec, err := m.forkOne(ctx, chk, staged, requested, owner, req.TTL)
+		rec, err := m.forkOne(ctx, chk, staged, requested, owner, req.TTL, maxTTL)
 		if err != nil {
 			return forks, err
 		}
@@ -650,13 +664,13 @@ func (m *Manager) stageCheckpointImages(ctx context.Context, chk CheckpointRecor
 // forkOne is one clone, built the way a create builds a sandbox: record, network, disk,
 // launch, ready — with the images and the credential the checkpoint supplies.
 func (m *Manager) forkOne(
-	ctx context.Context, chk CheckpointRecord, staged stagedImages, requested, owner string, ttl time.Duration,
+	ctx context.Context, chk CheckpointRecord, staged stagedImages, requested, owner string, ttl, maxTTL time.Duration,
 ) (Record, error) {
 	id, err := m.allocateID(requested)
 	if err != nil {
 		return Record{}, err
 	}
-	rec := m.newForkRecord(id, chk, owner, ttl, m.size(chk.VCPUs, chk.MemoryMB))
+	rec := m.newForkRecord(id, chk, owner, ttl, maxTTL, m.size(chk.VCPUs, chk.MemoryMB))
 
 	// The record exists before anything is allocated under it, exactly as in create:
 	// a fork that dies half-way leaves a record whose teardown knows what to free.
@@ -670,8 +684,11 @@ func (m *Manager) forkOne(
 }
 
 // newForkRecord is the record a clone starts from: the checkpoint's template, kernel,
-// allowlist and size, its own identity, and the checkpoint it came from.
-func (m *Manager) newForkRecord(id string, chk CheckpointRecord, owner string, ttl time.Duration, size sandboxSize) Record {
+// allowlist and size, its own identity, the checkpoint it came from, and the maximum
+// lifetime the fork was admitted with. That is the node's ceiling unless the caller asked
+// for something shorter, because a clone of a sandbox is a sandbox and no caller gets a
+// longer life than the node grants.
+func (m *Manager) newForkRecord(id string, chk CheckpointRecord, owner string, ttl, maxTTL time.Duration, size sandboxSize) Record {
 	now := m.now().UTC()
 
 	if ttl < 0 {
@@ -690,6 +707,7 @@ func (m *Manager) newForkRecord(id string, chk CheckpointRecord, owner string, t
 		Updated:        now,
 		LastActive:     now,
 		IdleTTLSeconds: int64(ttl / time.Second),
+		MaxTTLSeconds:  int64(maxTTL / time.Second),
 		Egress:         append([]string(nil), chk.Egress...),
 		Kernel:         chk.Kernel,
 		VCPUs:          size.vcpus,

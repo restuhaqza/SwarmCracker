@@ -175,6 +175,16 @@ func (s *Server) createSandbox(w http.ResponseWriter, r *http.Request) {
 			WithDetails(map[string]any{"reason": "invalid_ttl"}))
 		return
 	}
+	// 0 is "the node's ceiling" and anything below it is a mistake: a sandbox that may
+	// live no longer than it was created, or for a negative time, is not a request
+	// anybody can mean. A lifetime longer than the node's ceiling is the manager's
+	// refusal to make, because the ceiling is the node's configuration.
+	if req.MaxTTLSeconds < 0 {
+		s.writeError(w, r, output.NewError(output.CodeInvalid,
+			"maxTtlSeconds must be zero (the node's ceiling) or positive").
+			WithDetails(map[string]any{"reason": "invalid_max_ttl"}))
+		return
+	}
 
 	rec, err := s.cfg.Sandboxes.Create(r.Context(), sandbox.CreateRequest{
 		Template: req.Template,
@@ -182,6 +192,7 @@ func (s *Server) createSandbox(w http.ResponseWriter, r *http.Request) {
 		Owner:    req.Owner,
 		Allow:    req.Egress,
 		TTL:      time.Duration(req.IdleTTLSeconds) * time.Second,
+		MaxTTL:   time.Duration(req.MaxTTLSeconds) * time.Second,
 		VCPUs:    req.VCPUs,
 		MemoryMB: req.MemoryMB,
 	})
@@ -468,22 +479,26 @@ func (s *Server) unexposeSandboxPort(w http.ResponseWriter, r *http.Request) {
 // sandboxTokenExpiry bounds a token's life by the sandbox it is bound to, and returns the
 // expiry to store.
 //
-// The sandbox's idle TTL is the only deadline the node has for it: a sandbox nothing uses
-// again is taken back at LastActive+TTL, so a credential for it must not be good for
-// longer. The rule has two halves because both are what a caller means:
+// The sandbox's own deadline is the limit the node holds it to — its idle TTL measured from
+// its last use, its maximum lifetime measured from its creation, whichever comes first
+// (sandbox.Record.Deadline) — so a credential for it must not be good for longer than that.
+// Both are what decides: a node that gives its sandboxes a maximum lifetime takes one back
+// at the ceiling whether or not anything used it, and a token bounded only by the idle TTL
+// would outlive the sandbox it authenticates. The rule has two halves because both are what
+// a caller means:
 //
 //   - an expiry the caller named is refused when it outlives the sandbox, because a request
 //     the node cannot honour is answered rather than silently shortened;
 //   - a token with no expiry gets the sandbox's own deadline, because "never expires" for a
 //     credential bound to a sandbox that will is a claim about the sandbox that is not true.
 //
-// A sandbox with no TTL never idles out, so nothing bounds its tokens; removing it still
-// revokes them (the manager revokes the tokens scoped to a sandbox when it frees it), and a
-// token past its own expiry is refused by the store, so the two halves together are what
-// keeps a credential from outliving what it authenticates.
+// A sandbox with neither limit never ends on its own, so nothing bounds its tokens; removing
+// it still revokes them (the manager revokes the tokens scoped to a sandbox when it frees
+// it), and a token past its own expiry is refused by the store, so the two halves together
+// are what keeps a credential from outliving what it authenticates.
 func sandboxTokenExpiry(rec sandbox.Record, requested string, now time.Time) (string, error) {
-	ttl := rec.TTL()
-	if ttl <= 0 {
+	endsAt := rec.Deadline()
+	if endsAt.IsZero() {
 		return strings.TrimSpace(requested), nil
 	}
 
@@ -492,7 +507,7 @@ func sandboxTokenExpiry(rec sandbox.Record, requested string, now time.Time) (st
 	// at or before now rounds to an instant in the past, which the store refuses — that case
 	// is the next whole second, which is the honest answer for a sandbox the reaper is about
 	// to take back.
-	deadline := rec.LastActive.Add(ttl).Truncate(time.Second)
+	deadline := endsAt.Truncate(time.Second)
 	if !deadline.After(now) {
 		deadline = now.Truncate(time.Second).Add(time.Second)
 	}
@@ -508,7 +523,7 @@ func sandboxTokenExpiry(rec sandbox.Record, requested string, now time.Time) (st
 	}
 	if asked.After(deadline) {
 		return "", output.NewErrorf(output.CodeInvalid,
-			"sandbox %s is taken back at %s if nothing uses it, so a token for it cannot expire at %s",
+			"sandbox %s is taken back at %s, so a token for it cannot expire at %s",
 			rec.ID, deadline.UTC().Format(time.RFC3339), asked.UTC().Format(time.RFC3339)).
 			WithDetails(map[string]any{
 				"reason":           "token_outlives_sandbox",
@@ -562,6 +577,8 @@ func sandboxDocument(rec sandbox.Record) v1.Sandbox {
 		ReadyAt:        formatInstant(rec.ReadyAt),
 		LastActiveAt:   formatInstant(rec.LastActive),
 		IdleTTLSeconds: rec.IdleTTLSeconds,
+		MaxTTLSeconds:  rec.MaxTTLSeconds,
+		MaxExpiresAt:   formatInstant(rec.MaxDeadline()),
 		Reason:         rec.Reason,
 		GuestIP:        rec.GuestIP,
 		MAC:            rec.MAC,
@@ -656,6 +673,19 @@ func sandboxAPIError(err error) error {
 		return output.NewError(output.CodeQuotaExceeded, quota.Error()).
 			WithDetails(details).
 			WithRetryAfter(quota.RetryAfter)
+	}
+
+	// A lifetime this node will not grant is its own refusal, with the numbers: what
+	// was asked for and what the node allows. The sandbox is not silently shortened to
+	// the ceiling, because a caller that asked for a day and got an hour would be
+	// holding a sandbox whose expiry it never agreed to.
+	var tooLong *sandbox.MaxTTLError
+	if errors.As(err, &tooLong) {
+		return output.NewError(output.CodeInvalid, tooLong.Error()).WithDetails(map[string]any{
+			"reason":    "max_ttl_too_long",
+			"limit":     int64(tooLong.Limit / time.Second),
+			"requested": int64(tooLong.Requested / time.Second),
+		})
 	}
 
 	switch {

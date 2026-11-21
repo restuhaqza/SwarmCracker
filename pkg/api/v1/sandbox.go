@@ -36,6 +36,12 @@ type Sandbox struct {
 	// IdleTTLSeconds is how long the sandbox may sit unused before the node takes it
 	// back. Zero means it is never reaped.
 	IdleTTLSeconds int64 `json:"idleTtlSeconds,omitempty"`
+	// MaxTTLSeconds is how long the sandbox may exist at all, from its creation,
+	// whatever it does in between: an idle TTL is pushed back by use, this one is
+	// not. Zero means the node imposes no maximum. MaxExpiresAt is that deadline as
+	// an instant, absent when there is none.
+	MaxTTLSeconds int64  `json:"maxTtlSeconds,omitempty"`
+	MaxExpiresAt  string `json:"maxExpiresAt,omitempty"`
 
 	// Reason says why a sandbox is failed. It is absent in every other state.
 	Reason string `json:"reason,omitempty"`
@@ -166,13 +172,17 @@ func NewSandboxList(items []Sandbox) SandboxList {
 // template_pin_mismatch, before a disk is copied. ID is minted when empty. Egress is
 // the allowlist; empty means the sandbox reaches nothing, which is the default a
 // sandbox should have. IdleTTLSeconds is how long the sandbox may idle before the
-// node's reaper takes it back; zero means the node's default.
+// node's reaper takes it back; zero means the node's default. MaxTTLSeconds is how
+// long the sandbox may exist at all, whatever it does in between; zero means the
+// node's ceiling, and a request longer than that ceiling is 400 "max_ttl_too_long"
+// rather than silently shortened.
 type SandboxCreate struct {
 	Template       string   `json:"template"`
 	ID             string   `json:"id,omitempty"`
 	Owner          string   `json:"owner,omitempty"`
 	Egress         []string `json:"egress,omitempty"`
 	IdleTTLSeconds int64    `json:"idleTtlSeconds,omitempty"`
+	MaxTTLSeconds  int64    `json:"maxTtlSeconds,omitempty"`
 	VCPUs          int      `json:"vcpus,omitempty"`
 	MemoryMB       int      `json:"memoryMB,omitempty"`
 }

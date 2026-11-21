@@ -52,8 +52,9 @@ exited.
 
 `sandboxd --help` lists the rest: per-sandbox defaults (`--vcpus`, `--memory`), the
 jail uid range, the Jailer's parent cgroup and the VMM cgroup limits, the default idle
-TTL, the admission limits (`--quota-max-per-owner`, `--quota-memory-mb`,
-`--quota-disk-mb`, `--quota-retry-after`), and an optional TCP listener (`--api-listen`)
+TTL (`--default-ttl`), the longest life any sandbox may have (`--max-ttl`), the admission
+limits (`--quota-max-per-owner`, `--quota-memory-mb`, `--quota-disk-mb`,
+`--quota-retry-after`), and an optional TCP listener (`--api-listen`)
 for token-authenticated callers. The Unix socket's file mode is the credential for local
 callers; the TCP listener is TLS and needs a bearer token.
 
@@ -71,6 +72,7 @@ d22a0d18ff5f
   disk copy:  sparse
   agent:      src-7a2b9f9d0025a30f (boot a9c158a7db1a)
   idle ttl:   10m0s
+  max ttl:    none (the node sets no maximum)
   ready in:   4.406s (node), 4.786s (this command)
 ```
 
@@ -109,7 +111,9 @@ the addresses its namespace accepts are one list.
 ## Quota and admission
 
 A node has finite memory and disk, and one caller must not be able to spend all of it.
-`sandboxd` checks both before it allocates anything for a create:
+`sandboxd` checks both before it allocates anything for a create, and it admits the
+sandbox's lifetime in the same step — see
+[Idle TTL, the maximum lifetime, and the reaper](#idle-ttl-the-maximum-lifetime-and-the-reaper):
 
 | Limit | Flag | Default | Counted as |
 |---|---|---|---|
@@ -360,7 +364,7 @@ There is no `starting`, no `paused` and no `terminating`: a state a sandbox cann
 leave would be a label nothing can act on. A sandbox whose VMM exits on its own is
 reported `failed` the next time the node lists it, with the reason.
 
-## Idle TTL and the reaper
+## Idle TTL, the maximum lifetime, and the reaper
 
 Every sandbox may carry an idle TTL (`--ttl`, or the daemon's `--default-ttl`; `0`
 means the node's default, and a negative value means the reaper never takes it).
@@ -372,6 +376,57 @@ and every `exec` into it. The node has no way to observe activity inside a guest
 "the guest is busy" is not a question it can answer; "nobody has asked this sandbox to
 do anything in TTL" is, and that is what the reaper asks. A long-running sandbox should
 be given a TTL that covers its gaps, or be exec'd in.
+
+A node may also cap how long any sandbox may live (`sandboxd --max-ttl`), and a caller may
+ask for a shorter life for one sandbox (`sandbox create --max-ttl`). This deadline is
+measured from **the sandbox's creation** and nothing postpones it — using the sandbox
+pushes the idle TTL out and leaves this one where it was, which is the difference between
+the two settings and the reason both exist:
+
+| Setting | Measured from | Moved by `exec` |
+|---|---|---|
+| Idle TTL (`--ttl`) | the last use | yes |
+| Maximum lifetime (`--max-ttl`) | the creation | no |
+
+The two run side by side and **whichever comes first is the one that decides**: the sandbox
+is removed exactly as `rm` removes it, and the reaper reports which of the two took it. A
+sandbox that hits its maximum lifetime is not failed or paused first — it is gone, and its
+disk, namespace, jail and credential go with it, so a workload that must finish inside its
+lifetime should be sized for it rather than run up against it.
+
+The maximum lifetime is admitted with the rest of a create, before anything is allocated,
+and it is **on the record** (`maxTtlSeconds`, and `maxExpiresAt` on the API's document), not
+only in the daemon's configuration: the deadline a sandbox was admitted with survives a
+restart of `sandboxd` and a later change of `--max-ttl`. A create asking for a longer life
+than the node grants is refused — `400` with `details.reason` = `max_ttl_too_long`, plus the
+`limit` and what was `requested`, leaving no record, namespace, disk or VM behind — rather
+than being quietly given a shorter life than it asked for:
+
+```bash
+# A node granting at most a day, and a sandbox asking for two.
+swarmcracker sandbox create sandbox-base --max-ttl 48h
+#   error: the requested sandbox lifetime 48h0m0s is longer than this node allows (24h0m0s)
+
+swarmcracker sandbox create sandbox-base --max-ttl 6h
+```
+
+A create that asks for no maximum on a node that has a ceiling gets the ceiling; on a node
+with no `--max-ttl` it gets no maximum, and `sandbox create` prints `max ttl: none`. A
+lifetime shorter than a second is rounded up to a second rather than down to none, because a
+record counts its lifetime in whole seconds and "half a second" must not come out as "no
+limit at all".
+
+A fork is a sandbox like any other: each clone carries the node's ceiling as its own
+deadline. A negative `--max-ttl` on `sandboxd` stops it at start rather than being read as
+"no maximum", the same way every other limit in the daemon's configuration is refused.
+
+`0` — no ceiling at all — is the one place `sandboxd` reads a limit's zero as "unlimited", and
+it is a deliberate departure from the quota flags, where zero means a built-in default. A
+default ceiling would start expiring sandboxes that were created before the flag was ever
+set, which is a worse surprise than a flag an operator has to fill in. Because it is silent
+otherwise, `sandboxd` logs a warning at start when it has no ceiling ("no sandbox on this node
+has a maximum lifetime"), so a node that means to bound its sandboxes can treat that line as
+a to-do rather than discovering the omission from a sandbox that outlived its welcome.
 
 ## Tokens scoped to one sandbox
 
@@ -414,11 +469,12 @@ A runner token that holds `sandboxes:exec` but names no sandbox at all is refuse
 inside every sandbox on the node.
 
 **A token cannot outlive its sandbox.** Minted with no `--expires-at`, it is given the
-sandbox's own deadline — the sandbox's idle TTL measured from its last use, which is when the
-reaper would take it back. An `--expires-at` past that deadline is refused with
-`details.reason` = `token_outlives_sandbox` and `details.sandboxExpiresAt`, rather than
-silently shortened. A sandbox with no idle TTL never idles out, so nothing bounds its tokens;
-removing the sandbox revokes them either way.
+sandbox's own deadline — its idle TTL measured from its last use, or its maximum lifetime,
+**whichever comes first**, because that is when the reaper takes it back. An `--expires-at`
+past that deadline is refused with `details.reason` = `token_outlives_sandbox` and
+`details.sandboxExpiresAt`, rather than silently shortened. A sandbox with neither an idle
+TTL nor a maximum lifetime never ends on its own, so nothing bounds its tokens; removing the
+sandbox revokes them either way.
 
 The sandbox's own agent credential is per boot and per sandbox too: it is written into
 that sandbox's disk and published beside its muxer, and another sandbox's guest refuses
@@ -501,7 +557,9 @@ that always left an image behind would leak one per call if the caller could not
 to delete.
 
 Each clone is a separate sandbox, not a second view of one: its own copy of the disk, its
-own network namespace with its own MAC and IP, its own idle TTL, and its own guest-agent
+own network namespace with its own MAC and IP, its own idle TTL and maximum lifetime (the
+node's ceiling, since no caller gets a longer life for a clone than for a create), and its
+own guest-agent
 credential. The two identities a clone must *not* inherit are the ones the image froze in
 place — the MAC, the IP, and the vsock path the muxer listens on — and the two it must be
 given fresh are its network and its credential. A clone whose guest still holds the

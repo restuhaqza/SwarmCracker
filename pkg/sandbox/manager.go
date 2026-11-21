@@ -120,6 +120,15 @@ type Config struct {
 	// nothing to do, which is the safe default: a node that never configured a TTL
 	// must not start deleting sandboxes someone is using.
 	DefaultTTL time.Duration
+	// MaxTTL is the longest any sandbox on this node may live, from its creation,
+	// whatever it does in between (admission.go, admitLifetime). A sandbox created
+	// with a TTL of its own that is longer than this is refused rather than
+	// shortened, and one created without a TTL of its own gets this as its maximum.
+	// Zero means this node imposes no maximum, which is the default: a node that
+	// never configured one must not start expiring sandboxes on a schedule nobody
+	// chose. A negative value is refused by New, like every other limit that cannot
+	// be meant.
+	MaxTTL time.Duration
 	// Events is the bus this node's changes are published on: a create, a failure, a
 	// removal — whether the API asked for it or one of this manager's own loops did
 	// (pkg/sandbox/events.go). Nil means nothing is published, which is what a test
@@ -226,6 +235,12 @@ func New(cfg Config) (*Manager, error) {
 	if cfg.DefaultTTL < 0 {
 		return nil, fmt.Errorf("sandbox: idle TTL %s is negative", cfg.DefaultTTL)
 	}
+	// A ceiling that cannot be meant stops the node here, for the same reason a
+	// negative quota does: it is what every sandbox's admitted lifetime is checked
+	// against, so a node that cannot say what it is must not be admitting sandboxes.
+	if cfg.MaxTTL < 0 {
+		return nil, fmt.Errorf("sandbox: maximum sandbox lifetime %s is negative", cfg.MaxTTL)
+	}
 	// A quota that cannot be meant stops the node here rather than being read as "no
 	// limit": the values are what every create is held to, so a node that cannot say
 	// what they are must not be admitting sandboxes at all.
@@ -273,6 +288,12 @@ type CreateRequest struct {
 	// TTL is how long this sandbox may idle before the reaper takes it back. Zero
 	// means the node's default; a negative value means never.
 	TTL time.Duration
+	// MaxTTL is how long this sandbox may exist at all, from its creation, whatever
+	// it does in between: the idle TTL above is pushed back by use, this one is not.
+	// Zero means the node's ceiling, and a request longer than that ceiling is
+	// refused (MaxTTLError) rather than shortened; a negative value is refused. It is
+	// admitted with the rest of the request, before a record exists.
+	MaxTTL time.Duration
 	// VCPUs and MemoryMB are the sandbox's size. Zero means the node's default.
 	VCPUs    int
 	MemoryMB int
@@ -286,11 +307,12 @@ type CreateRequest struct {
 //  1. The template is resolved and its pin checked (golden.Resolve) — a template
 //     built by other host software is refused here, before a disk is copied and
 //     before a VMM exists.
-//  2. The node admits the sandbox (admission.go): one owner's share of sandboxes, and
-//     the node's memory and disk. This is the last step before anything is allocated,
-//     so a refusal — a 429 quota_exceeded over the API — leaves no record, no
-//     namespace, no disk and no VM behind: the attempt holds nothing to free and
-//     nothing a reader could mistake for a sandbox.
+//  2. The node admits the sandbox (admission.go): one owner's share of sandboxes,
+//     the node's memory and disk, and the lifetime it asked for. This is the last
+//     step before anything is allocated, so a refusal — a 429 quota_exceeded, or a
+//     400 for a life this node will not grant — leaves no record, no namespace, no
+//     disk and no VM behind: the attempt holds nothing to free and nothing a reader
+//     could mistake for a sandbox.
 //  3. The record is written in state created, so the sandbox is visible while it is
 //     being built. A node that dies mid-create leaves a created record rather than
 //     nothing, which is what the reaper and a retried rm work from.
@@ -323,8 +345,14 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (Record, error)
 
 	// Admission, before the ID is settled and before a record exists: a sandbox the
 	// node will not admit must not leave anything behind for this call or a later
-	// teardown to find.
-	if err := m.admit(template, m.size(req.VCPUs, req.MemoryMB), req.Owner); err != nil {
+	// teardown to find. The lifetime is admitted here with the rest, so a create
+	// that asked for a life this node will not grant leaves nothing either.
+	size := m.size(req.VCPUs, req.MemoryMB)
+	if err := m.admit(template, size, req.Owner); err != nil {
+		return Record{}, err
+	}
+	maxTTL, err := m.admitLifetime(req.MaxTTL)
+	if err != nil {
 		return Record{}, err
 	}
 
@@ -333,7 +361,7 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (Record, error)
 		return Record{}, err
 	}
 
-	rec := m.newRecord(id, req, template, m.size(req.VCPUs, req.MemoryMB))
+	rec := m.newRecord(id, req, template, size, maxTTL)
 	if err := m.cfg.Store.Put(rec); err != nil {
 		return Record{}, err
 	}
@@ -341,7 +369,7 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (Record, error)
 	// From here the record exists, so every failure has to leave it saying what
 	// happened rather than vanishing: fail() frees what this call allocated and
 	// records the reason.
-	if err := m.build(ctx, &rec, template, m.size(req.VCPUs, req.MemoryMB), req.Owner); err != nil {
+	if err := m.build(ctx, &rec, template, size, req.Owner); err != nil {
 		return m.fail(ctx, &rec, err)
 	}
 	return rec, nil
@@ -403,10 +431,12 @@ func (m *Manager) allocateID(requested string) (string, error) {
 }
 
 // newRecord is the record a create starts from: state created, the template it will
-// boot, and the idle TTL the reaper will hold it to. A caller that asked for neither a
-// TTL nor an allowlist gets the node's, and a negative TTL — "never reap this" — is a
-// zero on disk, which is what a record carries.
-func (m *Manager) newRecord(id string, req CreateRequest, tmpl template, size sandboxSize) Record {
+// boot, the idle TTL the reaper will hold it to, and the maximum lifetime it was
+// admitted with. A caller that asked for neither a TTL nor an allowlist gets the node's,
+// and a negative TTL — "never reap this" — is a zero on disk, which is what a record
+// carries. The maximum lifetime is what admission decided (admitLifetime): zero when
+// this node imposes none, and the sandbox's own deadline otherwise.
+func (m *Manager) newRecord(id string, req CreateRequest, tmpl template, size sandboxSize, maxTTL time.Duration) Record {
 	now := m.now().UTC()
 
 	ttl := req.TTL
@@ -431,6 +461,7 @@ func (m *Manager) newRecord(id string, req CreateRequest, tmpl template, size sa
 		Updated:        now,
 		LastActive:     now,
 		IdleTTLSeconds: int64(ttl / time.Second),
+		MaxTTLSeconds:  int64(maxTTL / time.Second),
 		Egress:         append([]string(nil), allow...),
 		Kernel:         tmpl.kernel,
 		VCPUs:          size.vcpus,

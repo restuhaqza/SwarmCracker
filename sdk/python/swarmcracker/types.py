@@ -414,6 +414,10 @@ class Sandbox(TypedDict):
     lastActiveAt: NotRequired[str]
     # How long the sandbox may sit unused before the reaper takes it back. 0 means never.
     idleTtlSeconds: NotRequired[int]
+    # How long the sandbox may exist at all, from its creation, whatever it does in between: an idle TTL is postponed by use, this one is not. 0 means this node sets no maximum. Whichever deadline is reached first is the one that takes the sandbox back.
+    maxTtlSeconds: NotRequired[int]
+    # When the maximum lifetime runs out, the record's own deadline. Absent when the sandbox has no maximum. It is the sandbox's deadline and not a function of the node's current configuration, so it survives a restart.
+    maxExpiresAt: NotRequired[str]
     # Why a sandbox is failed. Absent in every other state.
     reason: NotRequired[str]
     guestIp: NotRequired[str]
@@ -437,6 +441,8 @@ class SandboxCreate(TypedDict):
     egress: NotRequired[list[str]]
     # Idle TTL for this sandbox in seconds: 0 means the node's default, -1 means the reaper never takes it, and a positive value is the TTL.
     idleTtlSeconds: NotRequired[int]
+    # Maximum lifetime for this sandbox in seconds: how long it may exist at all, whatever it does in between. 0 means the node's ceiling, which is no maximum on a node that configures none. A value longer than the node's ceiling is 400 with details.reason "max_ttl_too_long" rather than being shortened to the ceiling, and a negative value is 400 with details.reason "invalid_max_ttl".
+    maxTtlSeconds: NotRequired[int]
     vcpus: NotRequired[int]
     memoryMB: NotRequired[int]
 
@@ -455,6 +461,10 @@ class SandboxDocument(TypedDict):
     lastActiveAt: NotRequired[str]
     # How long the sandbox may sit unused before the reaper takes it back. 0 means never.
     idleTtlSeconds: NotRequired[int]
+    # How long the sandbox may exist at all, from its creation, whatever it does in between: an idle TTL is postponed by use, this one is not. 0 means this node sets no maximum. Whichever deadline is reached first is the one that takes the sandbox back.
+    maxTtlSeconds: NotRequired[int]
+    # When the maximum lifetime runs out, the record's own deadline. Absent when the sandbox has no maximum. It is the sandbox's deadline and not a function of the node's current configuration, so it survives a restart.
+    maxExpiresAt: NotRequired[str]
     # Why a sandbox is failed. Absent in every other state.
     reason: NotRequired[str]
     guestIp: NotRequired[str]
@@ -622,6 +632,10 @@ class SandboxStatus(TypedDict):
     lastActiveAt: NotRequired[str]
     # How long the sandbox may sit unused before the reaper takes it back. 0 means never.
     idleTtlSeconds: NotRequired[int]
+    # How long the sandbox may exist at all, from its creation, whatever it does in between: an idle TTL is postponed by use, this one is not. 0 means this node sets no maximum. Whichever deadline is reached first is the one that takes the sandbox back.
+    maxTtlSeconds: NotRequired[int]
+    # When the maximum lifetime runs out, the record's own deadline. Absent when the sandbox has no maximum. It is the sandbox's deadline and not a function of the node's current configuration, so it survives a restart.
+    maxExpiresAt: NotRequired[str]
     # Why a sandbox is failed. Absent in every other state.
     reason: NotRequired[str]
     guestIp: NotRequired[str]
