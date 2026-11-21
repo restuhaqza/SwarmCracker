@@ -45,6 +45,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/restuhaqza/swarmcracker/pkg/agent"
+	"github.com/restuhaqza/swarmcracker/pkg/api/v1"
+	"github.com/restuhaqza/swarmcracker/pkg/golden"
 )
 
 // The binaries the run drives. They are built by scripts/host-evidence/run.sh and
@@ -413,43 +415,18 @@ func (h *host) runJSON(v any, args ...string) {
 	require.NoError(h.t, json.Unmarshal([]byte(out), v), "decoding the CLI's document:\n%s", out)
 }
 
-// sandbox is the document one sandbox is reported as. Only the fields this run acts
-// on are named: the rest of the contract is the API's, not this harness's.
-type sandbox struct {
-	ID             string   `json:"id"`
-	State          string   `json:"state"`
-	Template       string   `json:"template"`
-	GuestIP        string   `json:"guestIp"`
-	MAC            string   `json:"mac"`
-	CreatedAt      string   `json:"createdAt"`
-	ReadyAt        string   `json:"readyAt"`
-	IdleTTLSeconds int64    `json:"idleTtlSeconds"`
-	AgentVersion   string   `json:"agentVersion"`
-	BootID         string   `json:"bootId"`
-	Egress         []string `json:"egress"`
-	Ports          []struct {
-		GuestPort uint16 `json:"guestPort"`
-		Address   string `json:"address"`
-		URL       string `json:"url"`
-		ExpiresAt string `json:"expiresAt"`
-	} `json:"ports"`
-}
-
-// sandboxDocument is the create/read document: the envelope's fields sit beside the
-// sandbox's own.
-type sandboxDocument struct {
-	SchemaVersion int    `json:"schemaVersion"`
-	Kind          string `json:"kind"`
-	sandbox
-}
-
-// sandboxList is the listing document.
-type sandboxList struct {
-	SchemaVersion int       `json:"schemaVersion"`
-	Kind          string    `json:"kind"`
-	Items         []sandbox `json:"items"`
-	Checkpoint    string    `json:"checkpoint"`
-}
+// The documents this harness decodes are the API's own types (pkg/api/v1), not local
+// copies of their fields.
+//
+// A copy is how two of this run's criteria came to read a document with the wrong key:
+// criterion 11 matched "protocol" against prose whose key is "agentProtocol", and
+// criterion 9 decoded "secret" from a document that says "token". Both then reported the
+// product refusing something, which is what a harness reading a document it cannot parse
+// always looks like. A copy can disagree with the type it copies and neither side can
+// notice; the type itself cannot.
+type sandbox = v1.Sandbox
+type sandboxDocument = v1.SandboxDocument
+type sandboxList = v1.SandboxList
 
 // createFrom makes one sandbox from a named template, for a criterion that has to boot a
 // template other than the run's own — an older one, above all.
@@ -461,7 +438,7 @@ func (h *host) createFrom(id, tmpl string, extra ...string) sandbox {
 	require.Equal(h.t, "Sandbox", doc.Kind)
 	require.Equal(h.t, "ready", doc.State, "create must return a ready sandbox, not a VMM that started")
 	require.Equal(h.t, id, doc.ID)
-	return doc.sandbox
+	return doc.Sandbox
 }
 
 // create makes one sandbox and returns its document.
@@ -473,7 +450,7 @@ func (h *host) create(id string, extra ...string) sandbox {
 	require.Equal(h.t, "Sandbox", doc.Kind)
 	require.Equal(h.t, "ready", doc.State, "create must return a ready sandbox, not a VMM that started")
 	require.Equal(h.t, id, doc.ID)
-	return doc.sandbox
+	return doc.Sandbox
 }
 
 // get reads one sandbox back.
@@ -481,7 +458,7 @@ func (h *host) get(id string) sandbox {
 	h.t.Helper()
 	var doc sandboxDocument
 	h.runJSON(&doc, "sandbox", "inspect", id)
-	return doc.sandbox
+	return doc.Sandbox
 }
 
 // list returns every sandbox the node has a record of.
@@ -509,23 +486,7 @@ func (h *host) mustExec(id string, command ...string) string {
 }
 
 // remove removes a sandbox and returns the teardown report.
-type removal struct {
-	Sandbox string `json:"sandbox"`
-	Freed   struct {
-		ProcessStopped         bool `json:"processStopped"`
-		SocketRemoved          bool `json:"socketRemoved"`
-		CgroupRemoved          bool `json:"cgroupRemoved"`
-		JailRemoved            bool `json:"jailRemoved"`
-		NetNSRemoved           bool `json:"netnsRemoved"`
-		TAPRemoved             bool `json:"tapRemoved"`
-		DiskRemoved            bool `json:"diskRemoved"`
-		PreviewsClosed         int  `json:"previewsClosed"`
-		AgentCredentialRemoved bool `json:"agentCredentialRemoved"`
-		InstanceRecordRemoved  bool `json:"instanceRecordRemoved"`
-		RecordRemoved          bool `json:"recordRemoved"`
-		APITokensRevoked       int  `json:"apiTokensRevoked"`
-	} `json:"freed"`
-}
+type removal = v1.SandboxRemoval
 
 func (h *host) remove(id string) removal {
 	h.t.Helper()
@@ -701,42 +662,26 @@ func (h *host) olderTemplate(t *testing.T) (string, string, error) {
 // manifestLacksRooted reports whether a template manifest's recorded agent does not
 // advertise the rooted capability, and the ref the manifest names.
 func manifestLacksRooted(path string) (string, bool, error) {
-	raw, err := os.ReadFile(path)
+	md, err := golden.ReadMetadata(path)
 	if err != nil {
 		return "", false, err
 	}
-	var manifest struct {
-		Name  string `json:"name"`
-		Vert  string `json:"version"`
-		Agent struct {
-			Caps []string `json:"agentCaps"`
-		} `json:"agent"`
-	}
-	if err := json.Unmarshal(raw, &manifest); err != nil {
-		return "", false, err
-	}
-	if manifest.Name == "" || manifest.Vert == "" {
+	if md.Name == "" || md.Version == "" {
 		return "", false, fmt.Errorf("%s names no template", path)
 	}
-	for _, capability := range manifest.Agent.Caps {
+	for _, capability := range md.Agent.Caps {
 		if capability == agent.CapRooted {
 			return "", false, nil
 		}
 	}
-	return manifest.Name + "@" + manifest.Vert, true, nil
+	return md.Ref(), true, nil
 }
 
-// templateManifest is the part of a template's manifest a criterion compares against the
-// guest: what the build recorded about the agent inside it.
-type templateManifest struct {
-	Name    string `json:"name"`
-	Version string `json:"version"`
-	Agent   struct {
-		Protocol string   `json:"agentProtocol"`
-		Version  string   `json:"agentVersion"`
-		Caps     []string `json:"agentCaps"`
-	} `json:"agent"`
-}
+// templateManifest is a template's manifest as golden reads it — the same type the node
+// records and holds a template to, not a copy of its fields. The copy was the confusion
+// itself: a criterion matched "protocol" against prose whose key is "agentProtocol", which
+// a struct with no such field cannot make possible.
+type templateManifest = golden.ArtifactMetadata
 
 // readTemplateManifest reads the manifest a ref names out of the store the run boots
 // from. It is deliberately the file, not `template inspect`'s prose: a criterion that
@@ -749,11 +694,9 @@ func readTemplateManifest(t *testing.T, h *host, ref string) templateManifest {
 	if err != nil || len(path) == 0 {
 		t.Fatalf("the template store %s has no manifest for %s", h.goldenDir, ref)
 	}
-	raw, err := os.ReadFile(path[0])
+	md, err := golden.ReadMetadata(path[0])
 	require.NoError(t, err, "reading %s", path[0])
-	var md templateManifest
-	require.NoError(t, json.Unmarshal(raw, &md), "parsing %s", path[0])
-	return md
+	return *md
 }
 
 // withCLIFlags puts the CLI's own flags before the first "--", and leaves everything after

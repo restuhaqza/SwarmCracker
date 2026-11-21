@@ -180,3 +180,48 @@ func TestSandboxTokenSecretIsNamedTokenOnTheWire(t *testing.T) {
 	// The secret is never on a read: this document exists only in its creation response.
 	assert.Equal(t, KindSandboxToken, doc["kind"])
 }
+
+// TestSandboxDocumentKeysAreTheOnesCallersRead pins the encoded key set of every sandbox
+// document a caller decodes by name.
+//
+// Validating a document against the OpenAPI schema does not do this: the schemas allow
+// properties they do not name, so renaming a tag leaves a valid document with a key no
+// caller reads. That is how the acceptance harness came to decode "secret" from a document
+// that says "token", and "protocol" from one that says "agentProtocol" — twice, in two
+// runs. The keys here are the contract, so they are asserted as keys.
+func TestSandboxDocumentKeysAreTheOnesCallersRead(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		doc  any
+		keys []string
+	}{
+		{
+			name: "Sandbox",
+			doc:  Sandbox{ID: "sbx1", State: "ready", Template: "base@1.0.0", GuestIP: "10.63.0.2", MAC: "aa:bb:cc:dd:ee:ff", CreatedAt: "2026-11-21T00:00:00Z", ReadyAt: "2026-11-21T00:00:03Z", IdleTTLSeconds: 900, AgentVersion: "v1", BootID: "boot-1", Egress: []string{"host:80"}, Ports: []SandboxPort{{GuestPort: 8080, Address: "127.0.0.1:8080", URL: "http://127.0.0.1:8080/"}}},
+			keys: []string{"id", "state", "template", "guestIp", "mac", "createdAt", "readyAt", "idleTtlSeconds", "agentVersion", "bootId", "egress", "ports"},
+		},
+		{
+			name: "SandboxList",
+			doc:  NewSandboxList([]Sandbox{{ID: "sbx1", State: "ready"}}),
+			keys: []string{"schemaVersion", "kind", "items", "next"},
+		},
+		{
+			name: "SandboxRemoval",
+			doc:  NewSandboxRemoval("sbx1", SandboxFreed{ProcessStopped: true}),
+			keys: []string{"schemaVersion", "kind", "sandbox", "freed"},
+		},
+	} {
+		data, err := json.Marshal(tc.doc)
+		require.NoError(t, err)
+		var doc map[string]any
+		require.NoError(t, json.Unmarshal(data, &doc))
+
+		for _, key := range tc.keys {
+			assert.Contains(t, doc, key, "%s must carry %q for the caller that reads it:\n%s", tc.name, key, data)
+		}
+		// The sandbox's own host layout never crosses the API.
+		for _, hostOnly := range []string{"disk", "jail", "agentTokenFile", "netns", "secret"} {
+			assert.NotContains(t, doc, hostOnly, "%s must not carry %q:\n%s", tc.name, hostOnly, data)
+		}
+	}
+}
