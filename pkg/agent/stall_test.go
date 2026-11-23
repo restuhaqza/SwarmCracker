@@ -228,3 +228,95 @@ func TestUntarWithAFullDiskAnswersAndLogs(t *testing.T) {
 	assert.Contains(t, console.String(), "untar", "the failure is on the console an operator reads: %q", console.String())
 	assert.Contains(t, console.String(), "failed", "%q", console.String())
 }
+
+// TestCopyHearsTheGuestsAnswerWhileStillSending is the defect the 3 GiB host run exposed, and
+// the reason the previous fix was only half of one.
+//
+// The guest answered no_space after a few hundred kilobytes and then stopped reading — exactly
+// what a full disk does. The client could not hear it: it wrote its whole stream first and only
+// read afterwards, so it stayed blocked writing frames nobody would read until the watchdog
+// broke the connection 30 seconds later. The caller saw deadline_exceeded for a disk that was
+// full, which is the wrong answer and the wrong code.
+//
+// The test's bound is deliberately short — a fraction of the stall window — because returning
+// *at all* is not the property; returning with the guest's own answer, promptly, is.
+func TestCopyHearsTheGuestsAnswerWhileStillSending(t *testing.T) {
+	oldWindow := stallWindow
+	stallWindow = 10 * time.Second
+	t.Cleanup(func() { stallWindow = oldWindow })
+
+	local, remote := net.Pipe()
+	defer func() { _ = remote.Close() }()
+	go func() {
+		var req Request
+		if _, err := ReadFrame(remote, &req); err != nil {
+			return
+		}
+		// Take one frame, then fail the way a full disk does: answer, and read nothing more.
+		var msg Message
+		_, _ = ReadStreamFrame(remote, &msg)
+		_ = WriteFrame(remote, Message{Type: "error", ID: req.ID, ErrorCode: CodeNoSpace,
+			Error: "write /workspace/big3g.bin.sc-put-tmp: no space left on device"})
+	}()
+
+	c := testClient(local)
+	// Far more than the guest will accept: the send is still going when the answer arrives.
+	src := bytes.NewReader(bytes.Repeat([]byte("z"), 64<<20))
+
+	done := make(chan error, 1)
+	start := time.Now()
+	go func() { done <- c.CopyToRooted(t.Context(), "big3g.bin", src, 0o644) }()
+
+	select {
+	case err := <-done:
+		elapsed := time.Since(start)
+		require.Error(t, err, "a full disk must fail the copy")
+		assert.Equal(t, CodeNoSpace, CodeOf(err),
+			"the caller gets the guest's own answer, not a stall: %v", err)
+		assert.Less(t, elapsed, stallWindow,
+			"the answer arrives while the send is still running, not after the watchdog: %v", elapsed)
+	case <-time.After(30 * time.Second):
+		t.Fatal("the copy did not return: the guest's answer was never read")
+	}
+}
+
+// TestUntarHearsTheGuestsAnswerWhileStillSending is the same property for the tree transfer,
+// which had the identical shape.
+func TestUntarHearsTheGuestsAnswerWhileStillSending(t *testing.T) {
+	oldWindow := stallWindow
+	stallWindow = 10 * time.Second
+	t.Cleanup(func() { stallWindow = oldWindow })
+
+	local, remote := net.Pipe()
+	defer func() { _ = remote.Close() }()
+	go func() {
+		var req Request
+		if _, err := ReadFrame(remote, &req); err != nil {
+			return
+		}
+		var msg Message
+		_, _ = ReadStreamFrame(remote, &msg)
+		_ = WriteFrame(remote, Message{Type: "error", ID: req.ID, ErrorCode: CodeNoSpace,
+			Error: "extract: no space left on device"})
+	}()
+
+	c := testClient(local)
+	src := bytes.NewReader(bytes.Repeat([]byte("t"), 64<<20))
+
+	done := make(chan error, 1)
+	start := time.Now()
+	go func() {
+		_, err := c.Untar(t.Context(), "tree", src)
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		elapsed := time.Since(start)
+		require.Error(t, err)
+		assert.Equal(t, CodeNoSpace, CodeOf(err), "the tree transfer hears it too: %v", err)
+		assert.Less(t, elapsed, stallWindow, "and promptly: %v", elapsed)
+	case <-time.After(30 * time.Second):
+		t.Fatal("the untar did not return: the guest's answer was never read")
+	}
+}

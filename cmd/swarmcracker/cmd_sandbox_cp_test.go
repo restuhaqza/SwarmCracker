@@ -224,6 +224,37 @@ func TestSandboxCopyInStreamsATree(t *testing.T) {
 	assert.Contains(t, out, "wrote 5 entries")
 }
 
+// TestSandboxCopyInReportsAFullDiskAsNoSpaceAndExitOne is the deliberate behaviour change of
+// the fix that made the copy read the guest's answer while it is still sending.
+//
+// Before it, a file larger than the guest's free space did not come back as no_space at all:
+// the guest answered, nothing was listening, and the caller saw a watchdog abort — deadline
+// exceeded, exit 6, "retry" — for a disk that would fail the identical copy again. Exit 1 and
+// no_space is what a script can branch on: make room or send less, do not retry.
+func TestSandboxCopyInReportsAFullDiskAsNoSpaceAndExitOne(t *testing.T) {
+	resetAPIFlags(t)
+
+	endpoint, caFile := newAPITestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		writeAPITestDocument(w, http.StatusInsufficientStorage, v1.NewErrorDocument(v1.Error{
+			Code:      string(output.CodeNoSpace),
+			Message:   "write /workspace/big.bin: no space left on device",
+			Retryable: false,
+			Details:   map[string]any{"reason": "no_space"},
+		}))
+	})
+	apiHost, apiCA = endpoint, caFile
+
+	local := filepath.Join(t.TempDir(), "big.bin")
+	require.NoError(t, os.WriteFile(local, []byte("too big for the guest"), 0o600))
+
+	_, err := executeSandboxCommand(t, newSandboxCommand(), "cp", local, "sbx-1:big.bin")
+	typed := requireCode(t, err, output.CodeNoSpace)
+	assert.Equal(t, "no_space", typed.Details["reason"])
+	assert.Equal(t, 1, output.ExitCode(err),
+		"a full disk is acted on, not retried: exit 6 would tell a script to try again")
+}
+
 // TestSandboxCopyNeedsExactlyOneSandbox keeps the two directions unambiguous: an argument
 // pair that names no sandbox, or both, is a usage error rather than a guess.
 func TestSandboxCopyNeedsExactlyOneSandbox(t *testing.T) {
