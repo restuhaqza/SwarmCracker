@@ -709,20 +709,23 @@ func newRequestID() string {
 	return requestIDPrefix + hex.EncodeToString(buf[:])
 }
 
-// checkAccept rejects an Accept header that asks for a version this server does not serve.
+// checkAccept rejects an Accept header that asks for something this server cannot answer.
 //
-// It is a *version* negotiation and nothing else, and the distinction matters: the failure
-// it reports is unsupported_version with details.supported ["v1"], not a media-type
-// mismatch. A media type that says nothing about the envelope — text/plain from the console
-// route, application/x-tar from a file read, application/octet-stream from attach — is not
-// asking for another version of anything, so refusing it would be a category error, and it
-// was: the console route was gated by this function, `sandbox logs` sent text/plain, and the
-// route that explains a boot failure refused the caller who needed it.
+// It is a negotiation about the envelope, and it is deliberately narrow about what counts as
+// a request. The failure it reports is unsupported_version with details.supported ["v1"], not
+// a media-type mismatch, and a media type that says nothing about the envelope — text/plain
+// from the console route, application/x-tar from a file read, text/html, */* — is not asking
+// for anything, so refusing it would be a category error. It was: the console route was gated
+// by this function, `sandbox logs` sent text/plain, and the route that explains a boot failure
+// refused the caller who needed it.
 //
-// So: an explicit other-version claim (application/vnd.swarmcracker.v2+json) is refused, an
-// explicit v1 claim is accepted, and everything else is left to the handler. That is a
-// narrower gate than a list of blessed media types, and deliberately so — a list has to be
-// updated by whoever remembers, and the route that forgets fails only when someone uses it.
+// A media type that *does* name the v1 envelope is a request for that envelope, and it is
+// answered only if this server can produce the shape it names. v1+json it can; v1+xml it
+// cannot, and answering 200 with a JSON body would say "here is what you asked for" about
+// something that is not. So an explicit claim is held to two questions — which version, and
+// which format — and both are answered from the claim itself rather than from a list of
+// blessed types. A list has to be updated by whoever remembers, and the route that forgets
+// fails only when a caller uses it.
 func checkAccept(r *http.Request) error {
 	raw := strings.TrimSpace(r.Header.Get(acceptHeader))
 	if raw == "" {
@@ -731,40 +734,66 @@ func checkAccept(r *http.Request) error {
 
 	for _, part := range strings.Split(raw, ",") {
 		mediaType := strings.ToLower(strings.TrimSpace(strings.SplitN(part, ";", 2)[0]))
-		if version, claimed := envelopeVersion(mediaType); claimed && version != envelopeVersionV1 {
-			return output.NewErrorf(output.CodeUnsupportedVersion,
-				"unsupported Accept header; this server serves %s", MediaType).
-				WithDetails(map[string]any{"supported": []string{envelopeVersionV1}})
+		claim, claimed := envelopeClaimOf(mediaType)
+		if !claimed {
+			continue
+		}
+		if claim.version != envelopeVersionV1 {
+			return unsupportedAcceptError()
+		}
+		// A v1 claim names a shape. An empty format is the bare family, which promises
+		// nothing about the shape and is answered as the v1 default.
+		if claim.format != "" && claim.format != envelopeFormatJSON {
+			return unsupportedAcceptError()
 		}
 	}
 	return nil
 }
 
-// envelopeVersionV1 is the version this server speaks, as it appears in a media type.
-const envelopeVersionV1 = "v1"
+// unsupportedAcceptError is the one refusal this gate writes, for either half of a claim.
+func unsupportedAcceptError() error {
+	return output.NewErrorf(output.CodeUnsupportedVersion,
+		"unsupported Accept header; this server serves %s", MediaType).
+		WithDetails(map[string]any{"supported": []string{envelopeVersionV1}})
+}
 
-// envelopeVersion reports the API version a media type claims, and whether it claims one at
-// all.
+const (
+	// envelopeVersionV1 is the version this server speaks, as it appears in a media type.
+	envelopeVersionV1 = "v1"
+	// envelopeFormatJSON is the only envelope format it produces.
+	envelopeFormatJSON = "json"
+)
+
+// envelopeClaim is what a media type says about the envelope: its version and, when it names
+// one, its format.
+type envelopeClaim struct {
+	version string
+	format  string
+}
+
+// envelopeClaimOf reports what a media type claims about the envelope, and whether it claims
+// anything at all.
 //
-// Only the versioned envelope types make a claim: application/vnd.swarmcracker.<version>+json,
-// or the bare family with no version, application/vnd.swarmcracker.v1+xml, which is a v1
-// document in a shape this server cannot produce and so is not a version disagreement.
-// Every other media type — text/plain, application/x-tar, text/html, */* — is silent about
-// the envelope and therefore not this function's business.
-func envelopeVersion(mediaType string) (string, bool) {
+// Only the versioned envelope types make a claim: application/vnd.swarmcracker.<version>, or
+// application/vnd.swarmcracker.<version>+<format>. Every other media type — text/plain,
+// application/x-tar, text/html, */* — is silent about the envelope and therefore not this
+// gate's business.
+func envelopeClaimOf(mediaType string) (envelopeClaim, bool) {
 	const prefix = "application/vnd.swarmcracker."
 	if !strings.HasPrefix(mediaType, prefix) {
-		return "", false
+		return envelopeClaim{}, false
 	}
 	rest := strings.TrimPrefix(mediaType, prefix)
-	// "<version>+<format>", or "<version>" alone.
+	var claim envelopeClaim
 	if i := strings.Index(rest, "+"); i >= 0 {
-		rest = rest[:i]
+		claim.version, claim.format = rest[:i], rest[i+1:]
+	} else {
+		claim.version = rest
 	}
-	if rest == "" {
-		return "", false
+	if claim.version == "" {
+		return envelopeClaim{}, false
 	}
-	return rest, true
+	return claim, true
 }
 
 // checkQuery rejects a query string that does not parse. url.Values silently

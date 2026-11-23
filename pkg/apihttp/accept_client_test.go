@@ -103,7 +103,10 @@ func TestAcceptGateIsVersionNegotiationNotAMediaTypeWhitelist(t *testing.T) {
 		{"application/x-tar", http.StatusOK, "nor does a tree's"},
 		{"text/html", http.StatusOK, "nor an unclaimed type: the handler decides what it serves"},
 		{"*/*", http.StatusOK, "any"},
-		{MediaType, http.StatusOK, "an explicit v1 claim"},
+		{MediaType, http.StatusOK, "an explicit v1 claim, in the shape this server produces"},
+		{"application/vnd.swarmcracker.v1", http.StatusOK, "a v1 claim naming no shape is answered as the v1 default"},
+		{"application/vnd.swarmcracker.v1+xml", http.StatusNotAcceptable, "a v1 claim in a shape this server cannot produce"},
+		{"application/vnd.swarmcracker.v1+xml; q=0.9", http.StatusNotAcceptable, "the same, with a quality value"},
 		{MediaType + "; q=0.9", http.StatusOK, "the same, with a quality value"},
 		{"application/vnd.swarmcracker.v1+json, text/plain", http.StatusOK, "one acceptable entry is enough"},
 		{"application/vnd.swarmcracker.v2+json", http.StatusNotAcceptable, "an explicit other version"},
@@ -173,5 +176,42 @@ func TestTheGateAcceptsEveryAcceptAnyClientSends(t *testing.T) {
 		assert.NoError(t, checkAccept(req),
 			"%q (%s) must pass the version gate: it names no version, or v1's",
 			tc.accept, tc.askedBy)
+	}
+}
+
+// TestAVersionClaimMustAlsoNameAShapeThisServerProduces is the four cases the rule comes down
+// to, stated together so the distinction cannot be lost one at a time.
+//
+// A media type that names no envelope promises nothing, so it is the handler's business. One
+// that names the v1 envelope makes a request: for a version, and for a shape. This server
+// produces v1 JSON, so a v1 claim in another shape is refused rather than answered with JSON
+// under a header that asked for XML — "here is what you asked for" about something else is
+// worse than an honest 406.
+func TestAVersionClaimMustAlsoNameAShapeThisServerProduces(t *testing.T) {
+	srv, store := sandboxServer(t, fileBoxes())
+	token, _, err := store.Create("admin", RoleAdmin)
+	require.NoError(t, err)
+
+	for _, tc := range []struct {
+		accept string
+		want   int
+	}{
+		{MediaType, http.StatusOK},                                         // v1+json: the shape it produces
+		{"application/vnd.swarmcracker.v1+xml", http.StatusNotAcceptable},  // v1, a shape it cannot
+		{"text/plain", http.StatusOK},                                      // names no envelope at all
+		{"application/vnd.swarmcracker.v2+json", http.StatusNotAcceptable}, // another version
+	} {
+		req := httptest.NewRequest(http.MethodGet, "/v1/sandboxes/a/status", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Accept", tc.accept)
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+
+		assert.Equal(t, tc.want, rec.Code, "%q", tc.accept)
+		if tc.want == http.StatusNotAcceptable {
+			doc := decodeErrorBody(t, rec)
+			assert.Equal(t, "unsupported_version", doc.Error.Code, "%q carries the same code as a wrong version", tc.accept)
+			assert.Equal(t, []any{"v1"}, doc.Error.Details["supported"], "%q", tc.accept)
+		}
 	}
 }
