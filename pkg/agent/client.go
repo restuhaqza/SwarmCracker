@@ -896,33 +896,9 @@ func (c *Client) copyTo(ctx context.Context, guestPath string, src io.Reader, mo
 		return fmt.Errorf("copy: send put request: %w", err)
 	}
 
-	buf := make([]byte, fileChunkSize)
-	var sent int64
-	watch := c.watchProgress(ctx, "copy")
-	for {
-		n, err := src.Read(buf)
-		if n > 0 {
-			if werr := watch.write(Message{Type: "file", Data: buf[:n]}); werr != nil {
-				return fmt.Errorf("copy: send data frame after %d bytes: %w", sent, werr)
-			}
-			sent += int64(n)
-			watch.moved(sent)
-		}
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			return fmt.Errorf("copy: read source: %w", err)
-		}
-	}
-	if err := watch.write(Message{Type: "file"}); err != nil {
-		return fmt.Errorf("copy: send end-of-file frame after %d bytes: %w", sent, err)
-	}
-	watch.stop()
-
-	msg, err := c.readReply(req.ID, false)
+	msg, err := c.sendStream(ctx, "copy", req.ID, src)
 	if err != nil {
-		return readError(ctx, "copy", err)
+		return err
 	}
 	switch msg.Type {
 	case "ok":
@@ -963,36 +939,9 @@ func (c *Client) Untar(ctx context.Context, guestPath string, r io.Reader) (TarS
 		return TarSummary{}, fmt.Errorf("untar: send request: %w", err)
 	}
 
-	buf := make([]byte, fileChunkSize)
-	var sent int64
-	watch := c.watchProgress(ctx, "untar")
-	for {
-		n, err := r.Read(buf)
-		if n > 0 {
-			if werr := watch.write(Message{Type: "file", Data: buf[:n]}); werr != nil {
-				c.consumed = true
-				return TarSummary{}, fmt.Errorf("untar: send archive frame after %d bytes: %w", sent, werr)
-			}
-			sent += int64(n)
-			watch.moved(sent)
-		}
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			c.consumed = true
-			return TarSummary{}, fmt.Errorf("untar: read the archive: %w", err)
-		}
-	}
-	if err := watch.write(Message{Type: "file"}); err != nil {
-		c.consumed = true
-		return TarSummary{}, fmt.Errorf("untar: send end-of-archive frame after %d bytes: %w", sent, err)
-	}
-	watch.stop()
-
-	msg, err := c.readReply(req.ID, false)
+	msg, err := c.sendStream(ctx, "untar", req.ID, r)
 	if err != nil {
-		return TarSummary{}, readError(ctx, req.Op, err)
+		return TarSummary{}, err
 	}
 	switch msg.Type {
 	case "file":
@@ -1101,6 +1050,11 @@ func (c *Client) watchContext(ctx context.Context) func() {
 // this the caller blocks in a write that will never complete and the command never returns.
 var stallWindow = 30 * time.Second
 
+// replyGrace is how long a failed write waits for the reply that probably caused it before
+// reporting the write's own error instead. It is short on purpose: the reply is already on
+// the wire, and anything longer would be a second stall window in disguise.
+const replyGrace = 2 * time.Second
+
 // progressWatch bounds a stream by progress instead of by elapsed time.
 //
 // A write into a connection can block indefinitely: the peer stops reading, its socket buffer
@@ -1164,6 +1118,26 @@ func (c *Client) watchProgress(ctx context.Context, op string) *progressWatch {
 	return w
 }
 
+// hasStalled reports whether the watchdog has given up on this stream.
+func (w *progressWatch) hasStalled() bool {
+	select {
+	case <-w.stall:
+		return true
+	default:
+		return false
+	}
+}
+
+// stalledError is the typed failure a stalled stream reports: a timeout the caller can
+// branch on, with the byte count, rather than a bare write error carrying no code.
+func stalledError(op string, sent int64) error {
+	return &Error{
+		Code: CodeDeadlineExceeded,
+		Message: fmt.Sprintf("%s: stream stalled after %d bytes: no byte moved for %s, so the guest stopped reading (a full disk is the usual reason)",
+			op, sent, stallWindow),
+	}
+}
+
 // moved records that the stream has sent total bytes.
 func (w *progressWatch) moved(total int64) {
 	w.mu.Lock()
@@ -1178,10 +1152,7 @@ func (w *progressWatch) write(v any) error {
 		w.mu.Lock()
 		sent := w.sent
 		w.mu.Unlock()
-		return &Error{
-			Code:    CodeDeadlineExceeded,
-			Message: fmt.Sprintf("%s: stream stalled after %d bytes: no byte moved for %s, so the guest stopped reading (a full disk is the usual reason)", w.op, sent, stallWindow),
-		}
+		return stalledError(w.op, sent)
 	default:
 	}
 	if err := w.c.write(v); err != nil {
@@ -1190,10 +1161,7 @@ func (w *progressWatch) write(v any) error {
 			w.mu.Lock()
 			sent := w.sent
 			w.mu.Unlock()
-			return &Error{
-				Code:    CodeDeadlineExceeded,
-				Message: fmt.Sprintf("%s: stream stalled after %d bytes: no byte moved for %s, so the guest stopped reading (a full disk is the usual reason)", w.op, sent, stallWindow),
-			}
+			return stalledError(w.op, sent)
 		default:
 			return err
 		}
@@ -1215,4 +1183,188 @@ func (w *progressWatch) stop() {
 	default:
 		_ = w.c.conn.SetDeadline(time.Time{})
 	}
+}
+
+// concurrentReply is the guest's answer to a streaming request, read while the caller is
+// still sending.
+//
+// It is a goroutine and a one-slot channel because the answer and the send are concurrent by
+// nature: the guest refuses a write it cannot complete — a full disk is the case — answers,
+// and stops reading, all while the sender is mid-stream. Reading only after the send finishes
+// cannot hear that, which is how a 3 GiB copy into a 1.87 GiB workspace reported
+// deadline_exceeded for a guest that had said no_space.
+//
+// An error frame must reach the caller as a frame, not as a Go error, or its code is lost.
+// copyTo and Untar each read msg.Type == "error" and call frameError, and that is where the
+// guest's own code — no_space and the rest — becomes the caller's. An earlier shape of this
+// type folded the error frame into sendStream's Go error instead, which bypassed that switch:
+// the reply arrived with no code at all, and no_space would have surfaced as an uncoded
+// failure. It looked like tidying, so nothing flagged it; the concurrent-path tests fail on it
+// now because they assert the code, not merely that the copy failed.
+type concurrentReply struct {
+	ch   chan readResult
+	conn net.Conn
+}
+
+// readResult is one frame from the guest, or the failure of reading it.
+type readResult struct {
+	msg Message
+	err error
+}
+
+// startReplyReader begins reading the guest's reply for request id.
+//
+// Any answer that ends the transfer early means the send in progress will never complete, and
+// the reader expires the connection's write deadline to unblock it: otherwise the answer waits
+// in the channel while the writer stays parked in a write nobody will read, and the caller
+// learns of it only when the watchdog fires — the symptom this removes. Two answers do that:
+// an error frame, because the guest stopped reading, and a frame for another request, because
+// the stream is desynchronised and nothing further it reads can be trusted. A success reply is
+// left alone, because the send is finishing on its own.
+func startReplyReader(conn net.Conn, id string) *concurrentReply {
+	r := &concurrentReply{ch: make(chan readResult, 1), conn: conn}
+	go func() {
+		var msg Message
+		_, err := ReadFrame(conn, &msg)
+		desynchronised := err == nil && msg.ID != id
+		if desynchronised {
+			err = &Error{
+				Code:    CodeProtocolError,
+				Message: fmt.Sprintf("reply id %q does not match request id %q", msg.ID, id),
+			}
+		}
+		if (err != nil && desynchronised) || (err == nil && msg.Type == "error") {
+			_ = conn.SetWriteDeadline(time.Now())
+		}
+		r.ch <- readResult{msg: msg, err: err}
+	}()
+	return r
+}
+
+// pending is the reply if it has already arrived.
+//
+// A read the watchdog itself broke is not the guest's answer: this side gave up, so the stall
+// is what the caller must see, and reporting "i/o timeout" instead would lose the code.
+func (r *concurrentReply) pending(watch *progressWatch) (readResult, bool) {
+	select {
+	case got := <-r.ch:
+		if got.err != nil && watch.hasStalled() {
+			return readResult{}, false
+		}
+		return got, true
+	default:
+		return readResult{}, false
+	}
+}
+
+// soon is the reply if it arrives shortly: used after a write fails, where the failure is
+// usually the guest's own answer landing a few microseconds behind it. Waiting a moment turns
+// "send data frame: i/o timeout" into the guest's no_space; waiting forever would be the hang
+// this replaces.
+func (r *concurrentReply) soon(watch *progressWatch) (readResult, bool) {
+	if got, ok := r.pending(watch); ok {
+		return got, true
+	}
+	select {
+	case got := <-r.ch:
+		if got.err != nil && watch.hasStalled() {
+			return readResult{}, false
+		}
+		return got, true
+	case <-time.After(replyGrace):
+		return readResult{}, false
+	}
+}
+
+// await is the reply, waiting for however long the send takes.
+func (r *concurrentReply) await() readResult { return <-r.ch }
+
+// sendStream sends src to the guest as file frames while reading the guest's reply at the
+// same time, and returns that reply.
+//
+// Reading *during* the send is the point; concurrentReply carries the reason. The send stops
+// at the first answer, whatever it is: a refusal ends the transfer with the guest's own code
+// rather than the watchdog's timeout.
+//
+// The connection is marked consumed whenever the transfer ends without a full send — the
+// guest stopped reading at a frame boundary this client cannot trust, so no later request may
+// follow on it.
+func (c *Client) sendStream(ctx context.Context, op, id string, src io.Reader) (Message, error) {
+	replies := startReplyReader(c.conn, id)
+
+	watch := c.watchProgress(ctx, op)
+	defer watch.stop()
+	// A reply-driven abort sets a write deadline to unblock the send; clearing it here keeps
+	// a connection the guest did not abandon usable for its next request.
+	defer func() { _ = c.conn.SetWriteDeadline(time.Time{}) }()
+
+	// answered turns a reply that arrived into the result. Any reply ends the send: the guest
+	// answers a put or an untar once, so there is nothing further to write. An error is
+	// returned as its message, not as a Go error, because the caller types it — that switch
+	// is where the guest's code (no_space and the rest) becomes the caller's code.
+	answered := func(got readResult) (Message, error) {
+		if got.err != nil {
+			return Message{}, readError(ctx, op, got.err)
+		}
+		return got.msg, nil
+	}
+
+	var sent int64
+	buf := make([]byte, fileChunkSize)
+	for {
+		// The guest may answer before the stream ends. Any answer ends the transfer now.
+		if got, ok := replies.pending(watch); ok {
+			c.consumed = true
+			return answered(got)
+		}
+
+		n, err := src.Read(buf)
+		if n > 0 {
+			if werr := watch.write(Message{Type: "file", Data: buf[:n]}); werr != nil {
+				// Either the guest's answer arrived during the write, or the stream
+				// stalled. A reply that raced the write is the more precise answer.
+				if got, ok := replies.soon(watch); ok {
+					c.consumed = true
+					return answered(got)
+				}
+				c.consumed = true
+				// No reply: the guest read nothing and said nothing, so this is the stall the
+				// watchdog bounds. Reported as a typed failure — a bare write error would
+				// reach the caller with no code, which is how it loses its meaning.
+				if watch.hasStalled() {
+					return Message{}, stalledError(op, sent)
+				}
+				return Message{}, fmt.Errorf("%s: send data frame after %d bytes: %w", op, sent, werr)
+			}
+			sent += int64(n)
+			watch.moved(sent)
+		}
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			c.consumed = true
+			return Message{}, fmt.Errorf("%s: read source: %w", op, err)
+		}
+	}
+
+	if err := watch.write(Message{Type: "file"}); err != nil {
+		if got, ok := replies.soon(watch); ok {
+			c.consumed = true
+			return answered(got)
+		}
+		c.consumed = true
+		if watch.hasStalled() {
+			return Message{}, stalledError(op, sent)
+		}
+		return Message{}, fmt.Errorf("%s: send end-of-stream frame after %d bytes: %w", op, sent, err)
+	}
+
+	got := replies.await()
+	if got.err != nil {
+		if watch.hasStalled() {
+			return Message{}, stalledError(op, sent)
+		}
+	}
+	return answered(got)
 }

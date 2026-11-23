@@ -30,6 +30,7 @@ import (
 	"strings"
 
 	"github.com/restuhaqza/swarmcracker/pkg/agent"
+	"github.com/rs/zerolog/log"
 )
 
 // ErrMissingCapability means the sandbox's guest agent does not advertise the operation
@@ -196,6 +197,15 @@ func (m *Manager) PutFile(ctx context.Context, id, guestPath string, mode uint32
 		if missingCapability(err, agent.CapRooted) {
 			return 0, &MissingCapabilityError{Sandbox: rec.ID, Capability: agent.CapRooted}
 		}
+		// The node's own record of a copy that failed. A guest's console carries the same
+		// failure, but an operator who is not watching the console has nothing else: a 507
+		// with no line in the node's log is a refusal that leaves no trace of its own.
+		// The path and the byte count are what a copy needs; the contents never appear.
+		log.Warn().Err(err).
+			Str("sandbox_id", rec.ID).
+			Str("path", guestPath).
+			Int64("bytes_sent", counting.n).
+			Msg("Sandbox copy failed")
 		return counting.n, fmt.Errorf("sandbox %s: write %s: %w", rec.ID, guestPath, err)
 	}
 	m.touch(rec.ID)
@@ -228,6 +238,14 @@ func (m *Manager) ExtractTree(ctx context.Context, id, guestPath string, r io.Re
 		if missingCapability(err, agent.CapUntar) {
 			return agent.TarSummary{}, &MissingCapabilityError{Sandbox: rec.ID, Capability: agent.CapUntar}
 		}
+		// The same node-side record the single-file direction leaves. A tree that fills
+		// the guest's disk is refused with a 507 the caller sees and the console
+		// explains, but an operator reading this node's log has neither unless the
+		// manager says so here. The path is the target, never the archive's contents.
+		log.Warn().Err(err).
+			Str("sandbox_id", rec.ID).
+			Str("path", guestPath).
+			Msg("Sandbox copy failed")
 		return agent.TarSummary{}, fmt.Errorf("sandbox %s: write the tree at %s: %w", rec.ID, guestPath, err)
 	}
 	m.touch(rec.ID)
