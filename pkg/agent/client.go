@@ -1193,6 +1193,14 @@ func (w *progressWatch) stop() {
 // and stops reading, all while the sender is mid-stream. Reading only after the send finishes
 // cannot hear that, which is how a 3 GiB copy into a 1.87 GiB workspace reported
 // deadline_exceeded for a guest that had said no_space.
+//
+// An error frame must reach the caller as a frame, not as a Go error, or its code is lost.
+// copyTo and Untar each read msg.Type == "error" and call frameError, and that is where the
+// guest's own code — no_space and the rest — becomes the caller's. An earlier shape of this
+// type folded the error frame into sendStream's Go error instead, which bypassed that switch:
+// the reply arrived with no code at all, and no_space would have surfaced as an uncoded
+// failure. It looked like tidying, so nothing flagged it; the concurrent-path tests fail on it
+// now because they assert the code, not merely that the copy failed.
 type concurrentReply struct {
 	ch   chan readResult
 	conn net.Conn
