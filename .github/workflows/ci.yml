@@ -16,6 +16,10 @@ on:
       - 'test/conformance/**'
       - 'tools/sdkgen/**'
       - 'api/openapi.yaml'
+      # The coverage gate's script and its test: a change to either must run the job that
+      # enforces and tests them, or the change is untested by construction.
+      - 'scripts/coverage-gate.sh'
+      - 'scripts/coverage-gate.test.sh'
       # The committed guest agent is embedded in every image, so a commit that
       # changes only it is a change to what ships and gets checked like any other.
       - 'pkg/image/binaries/**'
@@ -69,6 +73,13 @@ jobs:
       - name: Test (all packages, with race detector)
         run: go test -short -race -coverprofile=coverage.out -covermode=atomic ./pkg/...
 
+      # The coverage gate's arithmetic, tested by its own pairs. It is here rather than with
+      # the other checks because it is cheap, it is the gate this job enforces, and a rule
+      # that is only ever exercised at whatever number `main` happens to have today is a rule
+      # nobody has checked.
+      - name: Coverage gate tests
+        run: sh scripts/coverage-gate.test.sh
+
       # An absolute percentage is not a stable gate: the runner has no
       # Firecracker/jailer (some tests skip) and `main` gains code between
       # branches, so the same tree measures differently over time. The
@@ -107,10 +118,13 @@ jobs:
           fi
           echo "base (${GITHUB_BASE_REF}) coverage: ${BASE_PCT}%"
 
-          awk -v b="$BASE_PCT" -v h="$HEAD_PCT" 'BEGIN { exit (h+0 < b-0.1) }' || {
+          # The comparison lives in scripts/coverage-gate.sh so it can be tested; it is
+          # not `h < b - 0.1` in awk, because 87.2 - 0.1 is 87.100000000000009 and an
+          # honest drop of exactly 0.1 would fail. See that script for the reasoning.
+          if ! sh scripts/coverage-gate.sh "$BASE_PCT" "$HEAD_PCT"; then
             echo "::error::coverage regressed: ${GITHUB_BASE_REF} ${BASE_PCT}% -> PR ${HEAD_PCT}%"
             exit 1
-          }
+          fi
           echo "coverage OK: no regression vs ${GITHUB_BASE_REF}"
 
       - name: Test CLI packages
