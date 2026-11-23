@@ -19,6 +19,18 @@ import (
 )
 
 // auditRecord builds one valid record at a given time.
+// recentAgo formats an instant a fixed distance in the past, so a fixture is inside the
+// default retention whenever the test runs.
+//
+// It exists because a literal timestamp is a time bomb: these fixtures said 2026-10-23, the
+// default retention is 30 days, and on 2026-11-23 the records were pruned before they could
+// be read — a test that passed for a month and then failed for everyone, on a PR that had not
+// touched it. The store keeps its real default here, which is the configuration a caller
+// actually runs.
+func recentAgo(d time.Duration) string {
+	return time.Now().UTC().Add(-d).Format(time.RFC3339Nano)
+}
+
 func auditRecord(at, requestID, action string) v1.AuditRecord {
 	return v1.AuditRecord{
 		At:        at,
@@ -233,7 +245,11 @@ func TestAuditStoreUsesDefaultRetention(t *testing.T) {
 func TestAuditStoreSkipsMalformedLines(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "audit.jsonl")
 
-	good := auditRecord("2026-10-23T10:00:00Z", "req_good", "service.create")
+	// Timestamps relative to now, so the fixtures stay inside the default retention
+	// however long after they were written the test runs. The store keeps that default:
+	// this test is about skipping malformed lines, and the configuration under it should be
+	// the one a caller runs.
+	good := auditRecord(recentAgo(time.Minute), "req_good", "service.create")
 	line, err := json.Marshal(good)
 	require.NoError(t, err)
 
@@ -241,7 +257,7 @@ func TestAuditStoreSkipsMalformedLines(t *testing.T) {
 		string(line),
 		"",
 		"{not json",
-		`{"at":"2026-10-23T10:00:01Z"}`, // missing requestId and action
+		`{"at":"` + recentAgo(30*time.Second) + `"}`, // missing requestId and action
 		`{"at":"","requestId":"req_empty","action":"service.create"}`,
 		string(line[:len(line)/2]), // truncated final line
 	}, "\n") + "\n"
@@ -256,7 +272,7 @@ func TestAuditStoreSkipsMalformedLines(t *testing.T) {
 	assert.Equal(t, "req_good", records[0].RequestID)
 
 	// The store still accepts new records after skipping the bad ones.
-	require.NoError(t, store.Append(auditRecord("2026-10-23T10:00:02Z", "req_new", "service.update")))
+	require.NoError(t, store.Append(auditRecord(recentAgo(0), "req_new", "service.update")))
 	records, _, err = store.List(10, "")
 	require.NoError(t, err)
 	assert.Len(t, records, 2)
@@ -485,10 +501,12 @@ func TestAuditAppendRejectsOversizedRecord(t *testing.T) {
 func TestAuditStoreSkipsRecordWithoutRequestID(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "audit.jsonl")
 	writeAuditLines(t, path,
-		[]byte(`{"at":"2026-10-23T10:00:00Z","action":"service.create","actor":{"type":"local"},"resource":{"kind":"Service"},"result":"ok"}`),
-		mustMarshalRecord(t, auditRecord("2026-10-23T10:00:01Z", "req_good", "service.update")),
+		[]byte(`{"at":"`+recentAgo(30*time.Second)+`","action":"service.create","actor":{"type":"local"},"resource":{"kind":"Service"},"result":"ok"}`),
+		mustMarshalRecord(t, auditRecord(recentAgo(time.Minute), "req_good", "service.update")),
 	)
 
+	// Default retention, with fixtures relative to now: the subject is the missing
+	// requestId, and the calendar must not be able to change the answer.
 	store, err := OpenAuditStore(path, 0)
 	require.NoError(t, err)
 

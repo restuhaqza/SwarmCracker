@@ -869,10 +869,13 @@ func TestNonCanonicalPathsStayV1Documents(t *testing.T) {
 func TestUnsupportedAcceptIs406(t *testing.T) {
 	api := newTestAPI(t, &fakeClient{})
 
+	// An Accept header is version negotiation. Only a media type that claims another
+	// version is refused; a type that says nothing about the envelope — text/html, a v1
+	// document in a shape this server does not produce — belongs to the handler. That
+	// distinction is why `sandbox logs` works: text/plain is not a version.
 	for _, accept := range []string{
 		"application/vnd.swarmcracker.v2+json",
-		"text/html",
-		"application/vnd.swarmcracker.v1+xml",
+		"application/vnd.swarmcracker.v3+json; q=0.5",
 	} {
 		rec := api.do(t, http.MethodGet, "/v1/version",
 			withToken(api.token), withHeader("Accept", accept))
@@ -884,7 +887,8 @@ func TestUnsupportedAcceptIs406(t *testing.T) {
 		assert.Equal(t, []any{"v1"}, doc.Error.Details["supported"], accept)
 	}
 
-	for _, accept := range []string{"application/json", "*/*", MediaType, MediaType + "; q=0.9"} {
+	for _, accept := range []string{"application/json", "*/*", MediaType, MediaType + "; q=0.9",
+		"text/html", "application/vnd.swarmcracker.v1+xml", "text/plain", "application/x-tar"} {
 		rec := api.do(t, http.MethodGet, "/v1/version",
 			withToken(api.token), withHeader("Accept", accept))
 		assert.Equal(t, http.StatusOK, rec.Code, accept)
@@ -894,8 +898,10 @@ func TestUnsupportedAcceptIs406(t *testing.T) {
 func TestUnixHandlerRejectsUnsupportedAccept(t *testing.T) {
 	api := newTestAPI(t, &fakeClient{})
 
+	// A claim of another version, on the listener with no token: the gate is not the
+	// authenticated listener's alone.
 	req := httptest.NewRequest(http.MethodGet, "/v1/version", nil)
-	req.Header.Set("Accept", "text/html")
+	req.Header.Set("Accept", "application/vnd.swarmcracker.v2+json")
 	rec := httptest.NewRecorder()
 	api.unix.ServeHTTP(rec, req)
 
