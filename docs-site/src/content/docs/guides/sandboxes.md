@@ -248,6 +248,13 @@ the tree is refused, naming the capability it lacks:
   "details": {"reason": "template_capability_missing", "capability": "untar"}}}
 ```
 
+**The shape of a copy is decided by what is being copied, not negotiated.** A regular file
+comes back as `application/octet-stream` and a directory as `application/x-tar`, whatever the
+request's `Accept` header says — so a client should read
+`X-Swarmcracker-File-Kind` rather than infer the shape from a header it asked for. An `Accept`
+that names no envelope (`*/*`, `text/plain`) is simply passed over, and the resource still
+decides.
+
 **Every `sandbox cp` needs the template's agent to speak `rooted`**, and that one is
 checked before a single byte moves. The confinement a copy relies on is a field on the
 request, and an agent built before it would unmarshal the field and ignore it — writing

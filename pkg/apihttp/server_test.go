@@ -876,6 +876,8 @@ func TestUnsupportedAcceptIs406(t *testing.T) {
 	for _, accept := range []string{
 		"application/vnd.swarmcracker.v2+json",
 		"application/vnd.swarmcracker.v3+json; q=0.5",
+		"application/vnd.swarmcracker.v1+xml",
+		"application/vnd.swarmcracker.v1+xml; q=0.9",
 	} {
 		rec := api.do(t, http.MethodGet, "/v1/version",
 			withToken(api.token), withHeader("Accept", accept))
@@ -887,8 +889,11 @@ func TestUnsupportedAcceptIs406(t *testing.T) {
 		assert.Equal(t, []any{"v1"}, doc.Error.Details["supported"], accept)
 	}
 
+	// A v1 claim in a shape this server cannot produce is refused: it names a format, and a
+	// 200 with a JSON body would answer "here is what you asked for" about something else.
+	// A media type that names no envelope promises nothing, so it is the handler's.
 	for _, accept := range []string{"application/json", "*/*", MediaType, MediaType + "; q=0.9",
-		"text/html", "application/vnd.swarmcracker.v1+xml", "text/plain", "application/x-tar"} {
+		"text/html", "text/plain", "application/x-tar"} {
 		rec := api.do(t, http.MethodGet, "/v1/version",
 			withToken(api.token), withHeader("Accept", accept))
 		assert.Equal(t, http.StatusOK, rec.Code, accept)

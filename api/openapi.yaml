@@ -2694,6 +2694,12 @@ paths:
         cannot become a typed document — the status and the media type are already on
         the wire — and is logged instead, leaving the caller a fragment. The attempt
         is audited as sandbox.files.
+        The response shape is decided by the resource, not negotiated: a regular file is
+        answered as application/octet-stream and a directory as application/x-tar, whatever
+        the request's Accept header says. An Accept naming the v1 envelope in another shape
+        (application/vnd.swarmcracker.v1+xml) is refused like any other claim this server
+        cannot produce; a header that names no envelope — */*, text/plain — is passed over,
+        and the resource still decides. No response here is a v1 document.
       parameters:
         - name: id
           in: path
