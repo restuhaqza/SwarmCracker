@@ -897,12 +897,16 @@ func (c *Client) copyTo(ctx context.Context, guestPath string, src io.Reader, mo
 	}
 
 	buf := make([]byte, fileChunkSize)
+	var sent int64
+	watch := c.watchProgress(ctx, "copy")
 	for {
 		n, err := src.Read(buf)
 		if n > 0 {
-			if werr := c.write(Message{Type: "file", Data: buf[:n]}); werr != nil {
-				return fmt.Errorf("copy: send data frame: %w", werr)
+			if werr := watch.write(Message{Type: "file", Data: buf[:n]}); werr != nil {
+				return fmt.Errorf("copy: send data frame after %d bytes: %w", sent, werr)
 			}
+			sent += int64(n)
+			watch.moved(sent)
 		}
 		if errors.Is(err, io.EOF) {
 			break
@@ -911,9 +915,10 @@ func (c *Client) copyTo(ctx context.Context, guestPath string, src io.Reader, mo
 			return fmt.Errorf("copy: read source: %w", err)
 		}
 	}
-	if err := c.write(Message{Type: "file"}); err != nil {
-		return fmt.Errorf("copy: send end-of-file frame: %w", err)
+	if err := watch.write(Message{Type: "file"}); err != nil {
+		return fmt.Errorf("copy: send end-of-file frame after %d bytes: %w", sent, err)
 	}
+	watch.stop()
 
 	msg, err := c.readReply(req.ID, false)
 	if err != nil {
@@ -959,13 +964,17 @@ func (c *Client) Untar(ctx context.Context, guestPath string, r io.Reader) (TarS
 	}
 
 	buf := make([]byte, fileChunkSize)
+	var sent int64
+	watch := c.watchProgress(ctx, "untar")
 	for {
 		n, err := r.Read(buf)
 		if n > 0 {
-			if werr := c.write(Message{Type: "file", Data: buf[:n]}); werr != nil {
+			if werr := watch.write(Message{Type: "file", Data: buf[:n]}); werr != nil {
 				c.consumed = true
-				return TarSummary{}, fmt.Errorf("untar: send archive frame: %w", werr)
+				return TarSummary{}, fmt.Errorf("untar: send archive frame after %d bytes: %w", sent, werr)
 			}
+			sent += int64(n)
+			watch.moved(sent)
 		}
 		if errors.Is(err, io.EOF) {
 			break
@@ -975,10 +984,11 @@ func (c *Client) Untar(ctx context.Context, guestPath string, r io.Reader) (TarS
 			return TarSummary{}, fmt.Errorf("untar: read the archive: %w", err)
 		}
 	}
-	if err := c.write(Message{Type: "file"}); err != nil {
+	if err := watch.write(Message{Type: "file"}); err != nil {
 		c.consumed = true
-		return TarSummary{}, fmt.Errorf("untar: send end-of-archive frame: %w", err)
+		return TarSummary{}, fmt.Errorf("untar: send end-of-archive frame after %d bytes: %w", sent, err)
 	}
+	watch.stop()
 
 	msg, err := c.readReply(req.ID, false)
 	if err != nil {
@@ -1080,5 +1090,129 @@ func (c *Client) watchContext(ctx context.Context) func() {
 	return func() {
 		close(done)
 		_ = c.conn.SetDeadline(time.Time{})
+	}
+}
+
+// stallWindow is how long a stream may move no bytes before the client gives up.
+//
+// It is a progress bound, not a deadline: a healthy 2 GiB copy takes minutes and must not be
+// cut, while a copy the guest has stopped reading moves nothing at all. The guest stops
+// reading when its disk fills — it answers the failure and waits for the caller — so without
+// this the caller blocks in a write that will never complete and the command never returns.
+var stallWindow = 30 * time.Second
+
+// progressWatch bounds a stream by progress instead of by elapsed time.
+//
+// A write into a connection can block indefinitely: the peer stops reading, its socket buffer
+// fills, and the write waits for room that never comes. The deadline in watchContext does not
+// help — it fires on the caller's context, which for a copy is not bounded — and an absolute
+// deadline would cut a large transfer that is merely slow. So a watchdog watches the byte
+// count and closes the connection when it has not changed for stallWindow, which turns the
+// blocked write into an error the caller can see.
+type progressWatch struct {
+	c      *Client
+	op     string
+	stopCh chan struct{}
+	stall  chan struct{}
+	done   chan struct{}
+
+	mu   sync.Mutex
+	sent int64
+}
+
+// watchProgress starts a watchdog for one streaming operation.
+func (c *Client) watchProgress(ctx context.Context, op string) *progressWatch {
+	w := &progressWatch{
+		c:      c,
+		op:     op,
+		stopCh: make(chan struct{}),
+		stall:  make(chan struct{}),
+		done:   make(chan struct{}),
+	}
+	go func() {
+		defer close(w.done)
+		t := time.NewTicker(stallWindow / 4)
+		defer t.Stop()
+		var last int64 = -1
+		var idle time.Duration
+		for {
+			select {
+			case <-w.stopCh:
+				return
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				w.mu.Lock()
+				sent := w.sent
+				w.mu.Unlock()
+				if sent == last {
+					idle += stallWindow / 4
+					if idle >= stallWindow {
+						close(w.stall)
+						// Unblock the write that is waiting for room: a closed
+						// connection fails it instead of leaving it parked.
+						_ = c.conn.SetDeadline(time.Now())
+						return
+					}
+					continue
+				}
+				last = sent
+				idle = 0
+			}
+		}
+	}()
+	return w
+}
+
+// moved records that the stream has sent total bytes.
+func (w *progressWatch) moved(total int64) {
+	w.mu.Lock()
+	w.sent = total
+	w.mu.Unlock()
+}
+
+// write sends one frame and reports a stall as the typed failure a caller branches on.
+func (w *progressWatch) write(v any) error {
+	select {
+	case <-w.stall:
+		w.mu.Lock()
+		sent := w.sent
+		w.mu.Unlock()
+		return &Error{
+			Code:    CodeDeadlineExceeded,
+			Message: fmt.Sprintf("%s: stream stalled after %d bytes: no byte moved for %s, so the guest stopped reading (a full disk is the usual reason)", w.op, sent, stallWindow),
+		}
+	default:
+	}
+	if err := w.c.write(v); err != nil {
+		select {
+		case <-w.stall:
+			w.mu.Lock()
+			sent := w.sent
+			w.mu.Unlock()
+			return &Error{
+				Code:    CodeDeadlineExceeded,
+				Message: fmt.Sprintf("%s: stream stalled after %d bytes: no byte moved for %s, so the guest stopped reading (a full disk is the usual reason)", w.op, sent, stallWindow),
+			}
+		default:
+			return err
+		}
+	}
+	return nil
+}
+
+// stop ends the watchdog and clears the deadline it may have set.
+func (w *progressWatch) stop() {
+	select {
+	case <-w.done:
+	default:
+		close(w.stopCh)
+		<-w.done
+	}
+	select {
+	case <-w.stall:
+		// The connection was abandoned; the caller is about to see the stall error.
+	default:
+		_ = w.c.conn.SetDeadline(time.Time{})
 	}
 }

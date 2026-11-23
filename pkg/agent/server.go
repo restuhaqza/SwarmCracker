@@ -133,6 +133,32 @@ func (s *server) writeFailure(code ErrorCode, format string, args ...any) error 
 	return s.write(Message{Type: "error", ErrorCode: code, Error: fmt.Sprintf(format, args...)})
 }
 
+// consoleLog is where a file operation's failure is reported for an operator to find. It is
+// the guest's serial console — the same stream a boot failure explains itself on, and the one
+// `sandbox logs` reads — because the alternative is what a full disk looked like before: a
+// caller that hung with no error, no exit status, and no line anywhere.
+//
+// A failed write here is not allowed to change the request's outcome: the typed failure is
+// still the answer the caller gets, and a console that cannot be written is not a reason to
+// turn a refusal into a different failure.
+var consoleLog io.Writer = func() io.Writer {
+	f, err := os.OpenFile("/dev/console", os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		return os.Stderr
+	}
+	return f
+}()
+
+// logFailure writes one line to the console for a file operation that failed. The message
+// carries the operation, the path and the guest's own error, which is what an operator needs
+// to tell a full disk from a refused path.
+func (s *server) logFailure(op, path string, err error) {
+	if consoleLog == nil {
+		return
+	}
+	_, _ = fmt.Fprintf(consoleLog, "sc-agent: %s %q failed: %v\n", op, path, err)
+}
+
 // requestContext bounds one request. A positive budget caps the handler; a
 // negative budget means the caller's deadline had already passed when the frame
 // was sent, so the returned context is already done and the request is refused
@@ -400,11 +426,18 @@ func (s *server) handlePut(req *Request) error {
 			break
 		}
 		if _, err := write.Write(msg.Data); err != nil {
-			return s.writeError("put: write %s: %v", req.Path, err)
+			// The guest's disk took the bytes up to here and no more. Reported at once,
+			// not after draining: a caller whose write has failed is blocked sending the
+			// rest, so waiting for the end of its stream is waiting forever. Logged
+			// because this is the failure an operator meets as `sandbox cp` failing on a
+			// full disk, and the console is where they look.
+			s.logFailure("put", req.Path, err)
+			return s.writeFileFailure(err)
 		}
 	}
 
 	if err := write.Commit(mode); err != nil {
+		s.logFailure("put", req.Path, err)
 		return s.writeFileFailure(err)
 	}
 	return s.write(Message{Type: "ok"})
@@ -593,15 +626,24 @@ func (s *server) handleUntar(req *Request) error {
 	}
 	reader := &frameReader{s: s}
 	summary, err := extractTree(s.reqCtx, req.Path, reader)
-	// The request's stream is consumed to its end whatever the extraction decided. The
-	// caller wrote a whole archive, and a reply sent while the connection still holds its
-	// tail would leave the next request reading bytes of this one — the same reason
-	// `handlePut` reads to the last frame before it answers.
-	if drainErr := reader.drain(); drainErr != nil && err == nil {
-		err = drainErr
-	}
 	if err != nil {
+		// The failure is reported *before* the rest of the archive is drained, and the
+		// drain is bounded by the read deadline the peer set.
+		//
+		// Reporting it afterwards was a deadlock: a guest that filled its disk stopped
+		// consuming the archive, so the caller blocked writing the rest of it, so the
+		// guest never reached the drain — a 2 GiB copy into a smaller root hung forever
+		// with no error, no exit status and no log line. The caller learns why as soon as
+		// the write fails; what it does with the rest of its archive is its own business.
+		s.logFailure("untar", req.Path, err)
 		return s.writeFileFailure(err)
+	}
+	// A transfer that succeeded still has to reach its end before the reply, because a
+	// reply sent while the connection holds the archive's tail would leave the next
+	// request reading bytes of this one.
+	if drainErr := reader.drain(); drainErr != nil {
+		s.logFailure("untar", req.Path, drainErr)
+		return s.writeFileFailure(drainErr)
 	}
 	return s.write(Message{Type: "file", Tar: &summary})
 }

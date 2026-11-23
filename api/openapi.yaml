@@ -2838,6 +2838,8 @@ paths:
           $ref: "#/components/responses/NotImplemented"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
+        "507":
+          $ref: "#/components/responses/InsufficientStorage"
         "4XX":
           description: Typed failure
           headers:
@@ -3934,6 +3936,20 @@ components:
         the experimental capability, with details.capability "snapshots" and
         details.reason "snapshots_disabled", before the task is resolved or
         audited.
+      headers:
+        X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+        X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+      content:
+        application/vnd.swarmcracker.v1+json:
+          schema: { $ref: "#/components/schemas/ErrorDocument" }
+    InsufficientStorage:
+      description: >
+        The guest's disk could not take the bytes the request was writing: code is
+        no_space, and details.reason is no_space. The request was well formed and
+        nothing in the product broke — the workspace filled up partway — so this is
+        neither 400 nor 500. It is not retryable: the same copy fails the same way
+        until something makes room. The failure is also written to the sandbox's
+        console, so `sandbox logs` shows it after the fact.
       headers:
         X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
         X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
@@ -5053,6 +5069,12 @@ components:
             - internal
             - usage
             - unreachable
+            # no_space: a guest whose disk could not take the bytes a copy was sending.
+            # Answered 507 by the file routes; not retryable, because the same copy fails
+            # the same way until something makes room.
+            - no_space
+            - template_pin_mismatch
+            - template_incompatible
         message: { type: string }
         requestId: { type: string }
         retryable: { type: boolean }

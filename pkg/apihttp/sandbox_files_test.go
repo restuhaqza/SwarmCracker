@@ -591,3 +591,27 @@ func TestSandboxStatusFailureModesAreTyped(t *testing.T) {
 	rec = sandboxRequest(t, srv, admin, http.MethodGet, "/v1/sandboxes/a/status", "")
 	require.Equal(t, http.StatusNotImplemented, rec.Code, rec.Body.String())
 }
+
+// TestPutSandboxFileReportsAFullDisk is the API half of the defect a 2 GiB copy into a 2 GiB
+// workspace found: the guest's disk filled, and the caller got a hang with no error document
+// and no status. A full guest disk is now 507 insufficient_storage with code no_space, so a
+// caller can tell "make room" from "the node broke" — and from "retry later", which it must
+// not do here.
+func TestPutSandboxFileReportsAFullDisk(t *testing.T) {
+	boxes := fileBoxes()
+	boxes.extractErr = &agent.Error{Code: agent.CodeNoSpace, Message: "write /workspace/big: no space left on device"}
+	srv, store := sandboxServer(t, boxes)
+	admin, _, err := store.Create("admin", RoleAdmin)
+	require.NoError(t, err)
+
+	archive := testArchive(t, map[string]string{"workspace/big": "x"})
+	rec := sandboxFileRequest(t, srv, admin, http.MethodPut,
+		"/v1/sandboxes/a/files?path=workspace", tarMediaType, string(archive))
+
+	require.Equal(t, http.StatusInsufficientStorage, rec.Code, rec.Body.String())
+	doc := decodeErrorBody(t, rec)
+	assert.Equal(t, string(output.CodeNoSpace), doc.Error.Code)
+	assert.Equal(t, "no_space", doc.Error.Details["reason"])
+	assert.Contains(t, doc.Error.Message, "no space", "the guest's own words reach the caller")
+	assert.False(t, doc.Error.Retryable, "the same copy fails the same way until something makes room")
+}

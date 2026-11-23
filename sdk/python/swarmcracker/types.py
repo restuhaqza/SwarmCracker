@@ -152,7 +152,7 @@ class Endpoint(TypedDict):
     ports: NotRequired[list[Port]]
 
 class Error(TypedDict):
-    code: Literal["invalid", "ambiguous", "not_found", "unauthenticated", "forbidden", "conflict", "cursor_expired", "rate_limited", "quota_exceeded", "unavailable", "timeout", "unsupported_version", "not_implemented", "internal", "usage", "unreachable"]
+    code: Literal["invalid", "ambiguous", "not_found", "unauthenticated", "forbidden", "conflict", "cursor_expired", "rate_limited", "quota_exceeded", "unavailable", "timeout", "unsupported_version", "not_implemented", "internal", "usage", "unreachable", "no_space", "template_pin_mismatch", "template_incompatible"]
     message: str
     requestId: NotRequired[str]
     retryable: bool
@@ -376,7 +376,7 @@ class Partial(TypedDict):
 
 class PartialError(TypedDict):
     """A complete Error object. Unlike a top-level Error, requestId is required here: a partial is tied to the request that produced it."""
-    code: Literal["invalid", "ambiguous", "not_found", "unauthenticated", "forbidden", "conflict", "cursor_expired", "rate_limited", "quota_exceeded", "unavailable", "timeout", "unsupported_version", "not_implemented", "internal", "usage", "unreachable"]
+    code: Literal["invalid", "ambiguous", "not_found", "unauthenticated", "forbidden", "conflict", "cursor_expired", "rate_limited", "quota_exceeded", "unavailable", "timeout", "unsupported_version", "not_implemented", "internal", "usage", "unreachable", "no_space", "template_pin_mismatch", "template_incompatible"]
     message: str
     requestId: str
     retryable: bool
