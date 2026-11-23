@@ -1067,6 +1067,11 @@ func statusForCode(code output.Code) int {
 		// the request was well formed, and the same request would succeed against
 		// the host the template was built on.
 		return http.StatusConflict
+	case output.CodeNoSpace:
+		// 507 Insufficient Storage is exactly this: the server could not store what
+		// the request needed. It is not 400 — the request was well formed — and not
+		// 500, because nothing broke; the guest's workspace is full.
+		return http.StatusInsufficientStorage
 	case output.CodeRateLimited:
 		return http.StatusTooManyRequests
 	case output.CodeQuotaExceeded:

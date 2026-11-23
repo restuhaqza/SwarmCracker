@@ -688,6 +688,15 @@ func sandboxAPIError(err error) error {
 		})
 	}
 
+	// A guest whose disk filled while receiving a copy. It is the one write failure an
+	// operator acts on rather than retries, and before this it arrived as an internal
+	// error — when it arrived at all, rather than hanging.
+	var agentErr *agent.Error
+	if errors.As(err, &agentErr) && agentErr.Code == agent.CodeNoSpace {
+		return output.NewError(output.CodeNoSpace, agentErr.Message).
+			WithDetails(map[string]any{"reason": "no_space", "capability": "sandboxes:files"})
+	}
+
 	switch {
 	case errors.Is(err, sandbox.ErrMissingCapability):
 		// The template's agent does not advertise the operation. It is a property of the

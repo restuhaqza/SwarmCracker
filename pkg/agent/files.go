@@ -189,11 +189,24 @@ func classifyPathError(err error) error {
 		return fail(CodeNotFound, "%v", err)
 	case errors.Is(err, fs.ErrPermission), errors.Is(err, syscall.ELOOP):
 		return fail(CodeNotPermitted, "%v", err)
+	case isNoSpace(err):
+		return fail(CodeNoSpace, "%v", err)
 	case errors.As(err, &errno):
 		return fail(CodeInternal, "%v", err)
 	default:
 		return fail(CodeUnsafePath, "%v", err)
 	}
+}
+
+// isNoSpace reports whether err is the guest's disk refusing more bytes: ENOSPC when the
+// filesystem is out of space, EDQUOT when the user's quota is.
+//
+// It is its own code rather than an internal failure because it is the one write error an
+// operator can act on. Before it existed, a copy that filled the workspace either hung —
+// the write failed while the caller was still sending — or arrived as "internal", which
+// says nothing about the disk being full.
+func isNoSpace(err error) bool {
+	return errors.Is(err, syscall.ENOSPC) || errors.Is(err, syscall.EDQUOT)
 }
 
 // confine turns a caller-supplied path into the path the file root resolves.
@@ -328,7 +341,13 @@ func createGuestFile(rel string, mode os.FileMode, rooted bool) (*guestWrite, er
 	return w, nil
 }
 
-func (w *guestWrite) Write(p []byte) (int, error) { return w.file.Write(p) }
+func (w *guestWrite) Write(p []byte) (int, error) {
+	n, err := w.file.Write(p)
+	if err != nil {
+		return n, classifyPathError(err)
+	}
+	return n, nil
+}
 
 // Commit closes the file, applies the mode and renames it onto its destination. It is
 // the only path that makes the write visible.

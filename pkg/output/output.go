@@ -68,6 +68,13 @@ const (
 	// is, and retrying the same request will not change that.
 	CodeTemplatePinMismatch  Code = "template_pin_mismatch"
 	CodeTemplateIncompatible Code = "template_incompatible"
+
+	// CodeNoSpace is a guest whose disk could not take the bytes a copy was
+	// sending: the workspace ran out of space partway. It is not `internal` —
+	// nothing in the product broke — and not retryable, because the same copy
+	// will fail the same way until something makes room. A caller acts on it by
+	// freeing space or choosing a smaller payload.
+	CodeNoSpace Code = "no_space"
 )
 
 // Error is a typed CLI/API failure. It implements error and carries the stable

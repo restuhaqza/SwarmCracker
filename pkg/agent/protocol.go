@@ -173,6 +173,13 @@ const (
 	// operation stops there and says so; it never returns a partial result that
 	// looks complete.
 	CodeTooLarge ErrorCode = "too_large"
+	// CodeNoSpace reports that the guest's disk could not take the bytes an operation was
+	// writing: a copy into a workspace smaller than what it was sent. It is separate from
+	// CodeInternal because it is the one write failure an operator can act on — the
+	// destination is full, and the path says which one — and separate from CodeTooLarge
+	// because nothing was rejected for its size; the disk ran out partway. A caller that
+	// gets it should make room, not retry the same copy.
+	CodeNoSpace ErrorCode = "no_space"
 )
 
 // Error is a typed protocol failure. Code is the part a caller branches on;

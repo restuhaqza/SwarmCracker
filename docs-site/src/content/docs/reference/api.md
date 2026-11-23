@@ -1154,6 +1154,13 @@ statuses in `pkg/output` (`usage`/`invalid`/`unsupported_version` → `2`,
 `partial` → `7`, anything else → `1`). Exit `7` is the `task ls --health` partial result:
 the page printed, but at least one node could not be read.
 
+`no_space` is the guest's disk refusing a copy: the sandbox's workspace filled up
+partway through a `sandbox cp` or a file write. It is answered `507 Insufficient
+Storage`, is not retryable — the same copy fails the same way until something makes
+room — and exits `1`, like every other failure a caller acts on rather than retries.
+Before it existed the same condition either arrived as `internal` or did not arrive at
+all.
+
 ### Rate limits
 
 Every authenticated token gets its own request bucket: **10 requests/second

@@ -165,7 +165,7 @@ export interface Endpoint {
 }
 
 export interface Error {
-  code: "invalid" | "ambiguous" | "not_found" | "unauthenticated" | "forbidden" | "conflict" | "cursor_expired" | "rate_limited" | "quota_exceeded" | "unavailable" | "timeout" | "unsupported_version" | "not_implemented" | "internal" | "usage" | "unreachable";
+  code: "invalid" | "ambiguous" | "not_found" | "unauthenticated" | "forbidden" | "conflict" | "cursor_expired" | "rate_limited" | "quota_exceeded" | "unavailable" | "timeout" | "unsupported_version" | "not_implemented" | "internal" | "usage" | "unreachable" | "no_space" | "template_pin_mismatch" | "template_incompatible";
   message: string;
   requestId?: string;
   retryable: boolean;
@@ -414,7 +414,7 @@ export interface Partial {
 
 /** A complete Error object. Unlike a top-level Error, requestId is required here: a partial is tied to the request that produced it. */
 export interface PartialError {
-  code: "invalid" | "ambiguous" | "not_found" | "unauthenticated" | "forbidden" | "conflict" | "cursor_expired" | "rate_limited" | "quota_exceeded" | "unavailable" | "timeout" | "unsupported_version" | "not_implemented" | "internal" | "usage" | "unreachable";
+  code: "invalid" | "ambiguous" | "not_found" | "unauthenticated" | "forbidden" | "conflict" | "cursor_expired" | "rate_limited" | "quota_exceeded" | "unavailable" | "timeout" | "unsupported_version" | "not_implemented" | "internal" | "usage" | "unreachable" | "no_space" | "template_pin_mismatch" | "template_incompatible";
   message: string;
   requestId: string;
   retryable: boolean;
