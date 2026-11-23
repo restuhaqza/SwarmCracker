@@ -1214,23 +1214,26 @@ type readResult struct {
 
 // startReplyReader begins reading the guest's reply for request id.
 //
-// An error frame means the guest has stopped reading, so the send in progress will never
-// complete: the reader expires the connection's write deadline to unblock it. Without that
-// the answer waits in the channel while the writer stays parked in a write nobody will read,
-// and the caller learns of it only when the watchdog fires — the symptom this removes. A
-// success reply is left alone, because the send is finishing on its own.
+// Any answer that ends the transfer early means the send in progress will never complete, and
+// the reader expires the connection's write deadline to unblock it: otherwise the answer waits
+// in the channel while the writer stays parked in a write nobody will read, and the caller
+// learns of it only when the watchdog fires — the symptom this removes. Two answers do that:
+// an error frame, because the guest stopped reading, and a frame for another request, because
+// the stream is desynchronised and nothing further it reads can be trusted. A success reply is
+// left alone, because the send is finishing on its own.
 func startReplyReader(conn net.Conn, id string) *concurrentReply {
 	r := &concurrentReply{ch: make(chan readResult, 1), conn: conn}
 	go func() {
 		var msg Message
 		_, err := ReadFrame(conn, &msg)
-		if err == nil && msg.ID != id {
+		desynchronised := err == nil && msg.ID != id
+		if desynchronised {
 			err = &Error{
 				Code:    CodeProtocolError,
 				Message: fmt.Sprintf("reply id %q does not match request id %q", msg.ID, id),
 			}
 		}
-		if err == nil && msg.Type == "error" {
+		if (err != nil && desynchronised) || (err == nil && msg.Type == "error") {
 			_ = conn.SetWriteDeadline(time.Now())
 		}
 		r.ch <- readResult{msg: msg, err: err}

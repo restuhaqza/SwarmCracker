@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -319,4 +320,118 @@ func TestUntarHearsTheGuestsAnswerWhileStillSending(t *testing.T) {
 	case <-time.After(30 * time.Second):
 		t.Fatal("the untar did not return: the guest's answer was never read")
 	}
+}
+
+// TestSendStreamRejectsAReplyForAnotherRequest covers the reader that runs during a send: a
+// frame echoing some other request's id must be a protocol failure, not this transfer's
+// result. The check lives in the concurrent reader now, so it is only reachable through a
+// stream — an exec's serial path would not exercise it.
+func TestSendStreamRejectsAReplyForAnotherRequest(t *testing.T) {
+	local, remote := net.Pipe()
+	defer func() { _ = remote.Close() }()
+	go func() {
+		var req Request
+		if _, err := ReadFrame(remote, &req); err != nil {
+			return
+		}
+		var msg Message
+		_, _ = ReadStreamFrame(remote, &msg)
+		_ = WriteFrame(remote, Message{Type: "ok", ID: "not-" + req.ID})
+	}()
+
+	c := testClient(local)
+	err := c.CopyToRooted(t.Context(), "f", bytes.NewReader(bytes.Repeat([]byte("x"), 1<<20)), 0o644)
+	require.Error(t, err)
+	assert.Equal(t, CodeProtocolError, CodeOf(err),
+		"another request's frame cannot be attributed to this one: %v", err)
+}
+
+// TestSendStreamReportsAnErrorThatArrivesAfterTheWholeSend is the other side of the concurrent
+// reader: the guest can accept every byte and then still refuse the result — a rename that
+// found the target taken, a flush that failed. That answer arrives after the send finished,
+// and it must still be the caller's code rather than a silent success.
+func TestSendStreamReportsAnErrorThatArrivesAfterTheWholeSend(t *testing.T) {
+	local, remote := net.Pipe()
+	defer func() { _ = remote.Close() }()
+	go func() {
+		var req Request
+		if _, err := ReadFrame(remote, &req); err != nil {
+			return
+		}
+		// Read the data frames and the terminal empty one, then refuse.
+		for {
+			var msg Message
+			if _, err := ReadStreamFrame(remote, &msg); err != nil {
+				return
+			}
+			if len(msg.Data) == 0 {
+				break
+			}
+		}
+		_ = WriteFrame(remote, Message{Type: "error", ID: req.ID, ErrorCode: CodeInternal,
+			Error: "rename: target exists"})
+	}()
+
+	c := testClient(local)
+	err := c.CopyToRooted(t.Context(), "f", strings.NewReader("short"), 0o644)
+	require.Error(t, err, "a refusal after a complete send is still a failure")
+	assert.Equal(t, CodeInternal, CodeOf(err),
+		"the code is the guest's, carried through the frame: %v", err)
+}
+
+// TestSendStreamReportsAFailedEndOfStreamFrame covers the terminal frame itself failing: the
+// guest is gone by the time the empty end-of-file frame is written. The caller must get the
+// typed failure the caller branches on, and the connection must not be reused.
+func TestSendStreamReportsAFailedEndOfStreamFrame(t *testing.T) {
+	old := stallWindow
+	stallWindow = 200 * time.Millisecond
+	t.Cleanup(func() { stallWindow = old })
+
+	local, remote := net.Pipe()
+	go func() {
+		var req Request
+		if _, err := ReadFrame(remote, &req); err != nil {
+			return
+		}
+		// Nothing at all is read after the request: the guest is gone.
+	}()
+	defer func() { _ = remote.Close() }()
+
+	c := testClient(local)
+	src := bytes.NewReader(bytes.Repeat([]byte("x"), 8<<20))
+	err := c.CopyToRooted(t.Context(), "f", src, 0o644)
+	require.Error(t, err, "a copy into a guest that vanished must not report success")
+	assert.Equal(t, CodeDeadlineExceeded, CodeOf(err),
+		"a send that stops moving is the typed timeout, with its byte count: %v", err)
+	assert.Contains(t, err.Error(), "stalled")
+}
+
+// TestSendStreamNoticesAnAnswerBetweenFrames is the case where the guest refuses while every
+// write is still succeeding into the socket buffer: it answers, and the sender has not failed a
+// write yet, so nothing but the reader can end the transfer. Waiting for a write to fail first
+// would mean writing until the buffer filled — megabytes of a stream the guest has already
+// refused, and on a large copy the same long stall the watchdog exists to bound.
+func TestSendStreamNoticesAnAnswerBetweenFrames(t *testing.T) {
+	local, remote := net.Pipe()
+	defer func() { _ = remote.Close() }()
+	go func() {
+		var req Request
+		if _, err := ReadFrame(remote, &req); err != nil {
+			return
+		}
+		// Read one frame, then answer while the client is between frames. The client's next
+		// writes will still succeed into the socket, so only the reader sees this.
+		var msg Message
+		_, _ = ReadStreamFrame(remote, &msg)
+		_ = WriteFrame(remote, Message{Type: "error", ID: req.ID, ErrorCode: CodeNoSpace,
+			Error: "write /workspace/big: no space left on device"})
+		time.Sleep(50 * time.Millisecond)
+	}()
+
+	c := testClient(local)
+	// Small enough that the send would complete on its own: without the reader noticing the
+	// answer, this copy would report success for a guest that wrote nothing.
+	err := c.CopyToRooted(t.Context(), "big", strings.NewReader("tiny"), 0o644)
+	require.Error(t, err, "a refusal must not be reported as a successful copy")
+	assert.Equal(t, CodeNoSpace, CodeOf(err), "%v", err)
 }
