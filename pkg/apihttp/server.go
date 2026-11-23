@@ -709,7 +709,20 @@ func newRequestID() string {
 	return requestIDPrefix + hex.EncodeToString(buf[:])
 }
 
-// checkAccept rejects an Accept header that names only unsupported versions.
+// checkAccept rejects an Accept header that asks for a version this server does not serve.
+//
+// It is a *version* negotiation and nothing else, and the distinction matters: the failure
+// it reports is unsupported_version with details.supported ["v1"], not a media-type
+// mismatch. A media type that says nothing about the envelope — text/plain from the console
+// route, application/x-tar from a file read, application/octet-stream from attach — is not
+// asking for another version of anything, so refusing it would be a category error, and it
+// was: the console route was gated by this function, `sandbox logs` sent text/plain, and the
+// route that explains a boot failure refused the caller who needed it.
+//
+// So: an explicit other-version claim (application/vnd.swarmcracker.v2+json) is refused, an
+// explicit v1 claim is accepted, and everything else is left to the handler. That is a
+// narrower gate than a list of blessed media types, and deliberately so — a list has to be
+// updated by whoever remembers, and the route that forgets fails only when someone uses it.
 func checkAccept(r *http.Request) error {
 	raw := strings.TrimSpace(r.Header.Get(acceptHeader))
 	if raw == "" {
@@ -717,17 +730,41 @@ func checkAccept(r *http.Request) error {
 	}
 
 	for _, part := range strings.Split(raw, ",") {
-		mediaType := strings.TrimSpace(strings.SplitN(part, ";", 2)[0])
-		switch mediaType {
-		case "*/*", "application/json", MediaType, "text/event-stream", "application/x-ndjson",
-			"application/octet-stream":
-			return nil
+		mediaType := strings.ToLower(strings.TrimSpace(strings.SplitN(part, ";", 2)[0]))
+		if version, claimed := envelopeVersion(mediaType); claimed && version != envelopeVersionV1 {
+			return output.NewErrorf(output.CodeUnsupportedVersion,
+				"unsupported Accept header; this server serves %s", MediaType).
+				WithDetails(map[string]any{"supported": []string{envelopeVersionV1}})
 		}
 	}
+	return nil
+}
 
-	return output.NewErrorf(output.CodeUnsupportedVersion,
-		"unsupported Accept header; this server serves %s", MediaType).
-		WithDetails(map[string]any{"supported": []string{"v1"}})
+// envelopeVersionV1 is the version this server speaks, as it appears in a media type.
+const envelopeVersionV1 = "v1"
+
+// envelopeVersion reports the API version a media type claims, and whether it claims one at
+// all.
+//
+// Only the versioned envelope types make a claim: application/vnd.swarmcracker.<version>+json,
+// or the bare family with no version, application/vnd.swarmcracker.v1+xml, which is a v1
+// document in a shape this server cannot produce and so is not a version disagreement.
+// Every other media type — text/plain, application/x-tar, text/html, */* — is silent about
+// the envelope and therefore not this function's business.
+func envelopeVersion(mediaType string) (string, bool) {
+	const prefix = "application/vnd.swarmcracker."
+	if !strings.HasPrefix(mediaType, prefix) {
+		return "", false
+	}
+	rest := strings.TrimPrefix(mediaType, prefix)
+	// "<version>+<format>", or "<version>" alone.
+	if i := strings.Index(rest, "+"); i >= 0 {
+		rest = rest[:i]
+	}
+	if rest == "" {
+		return "", false
+	}
+	return rest, true
 }
 
 // checkQuery rejects a query string that does not parse. url.Values silently
