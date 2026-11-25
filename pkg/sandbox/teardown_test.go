@@ -52,13 +52,24 @@ func TestRemoveCgroupReportsWhatIsStillInUse(t *testing.T) {
 	assert.False(t, removed, "a cgroup that is already gone is not reported as removed")
 
 	// A directory with a child is what a cgroup with a live process looks like to
-	// rmdir, and it is an error rather than a quiet success.
+	// rmdir. It is an error rather than a quiet success — but only after the removal
+	// has waited out its grace, because a process that has just been signalled is
+	// "gone" by /proc before the kernel lets go of its cgroup. This is the shape of the
+	// failure a host run found six times in 100 concurrent removals.
 	require.NoError(t, os.Mkdir(dir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "cgroup.procs"), []byte("1\n"), 0o600))
+
+	start := time.Now()
 	removed, err = removeCgroup(dir)
+	elapsed := time.Since(start)
 	require.Error(t, err)
 	assert.False(t, removed)
-	assert.ErrorIs(t, err, syscall.ENOTEMPTY)
+	assert.ErrorIs(t, err, syscall.ENOTEMPTY,
+		"the kernel's own reason is still the cause after the wait")
+	assert.ErrorIs(t, err, ErrInUse,
+		"and the failure is typed, so the API reports resource-in-use rather than unreachable")
+	assert.GreaterOrEqual(t, elapsed, cgroupReleaseGrace,
+		"the removal waited for the kernel to release the directory before giving up")
 }
 
 // TestRemoveKeepsTheRecordWhenACredentialCannotBeRevoked pins why token revocation is
@@ -161,4 +172,81 @@ func TestRemoveNamesWhatItCannotRemove(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "read the instance record")
 	})
+}
+
+// TestRemoveCgroupWaitsForAProcessThatIsLeaving is the race the host run exposed: a VMM
+// that has been signalled is gone from /proc before the kernel lets go of its cgroup, so
+// a removal that gives up on the first EBUSY fails for a sandbox that is already dead.
+// Here the child appears held for a moment and is released while the removal is waiting.
+func TestRemoveCgroupWaitsForAProcessThatIsLeaving(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "cgroup")
+	require.NoError(t, os.Mkdir(dir, 0o755))
+
+	// A real child directory stands in for the process the kernel has not released yet,
+	// which is what makes rmdir answer ENOTEMPTY.
+	held := filepath.Join(dir, "held")
+	require.NoError(t, os.MkdirAll(held, 0o755))
+
+	released := make(chan struct{})
+	go func() {
+		time.Sleep(cgroupReleaseGrace / 4)
+		_ = os.Remove(held)
+		close(released)
+	}()
+
+	removed, err := removeCgroup(dir)
+	<-released
+	require.NoError(t, err, "a process that finishes leaving within the grace must not fail the removal")
+	assert.True(t, removed, "and the cgroup is reported as removed, because it was")
+}
+
+// TestAFailedSandboxWithResidueIsReaped is the leak this fix closes. A teardown that
+// failed leaves the record naming a netns, a disk, a jail and a vsock — resources no
+// caller will ask about again, because the sandbox is already failed. Before the reaper
+// could take it, only idle and max TTLs made a record due, so a failed sandbox with no
+// TTL was never retried and held its resources for the life of the node.
+func TestAFailedSandboxWithResidueIsReaped(t *testing.T) {
+	f := newFixture(t)
+
+	// The shape a failed teardown leaves: failed, no TTL, and still naming the netns,
+	// disk, jail and vsock that the teardown did not get to.
+	rec := testRecord("sbx-failed")
+	rec.State = StateFailed
+	rec.Reason = "cgroup is still in use"
+	rec.NetNS = "/var/run/netns/sbx-failed"
+	rec.VsockPath = "/run/firecracker/sbx-failed.vsock"
+	rec.Disk, rec.JailRoot = "", ""
+	rec.IdleTTLSeconds, rec.MaxTTLSeconds = 0, 0
+	rec.Updated = time.Now().Add(-time.Minute)
+	require.NoError(t, f.manager.cfg.Store.Put(rec))
+
+	// Nothing is due while the record is still inside its retry window: a caller reading
+	// it right after the failure should see the reason, not a record that vanished.
+	justFailed := rec
+	justFailed.Updated = time.Now().Add(-time.Second)
+	if limit, due := justFailed.ReapDue(time.Now()); due {
+		t.Fatalf("a failed sandbox must not be reaped before its retry window passes, got limit %q", limit)
+	}
+
+	reaped, err := f.manager.Reap(context.Background(), time.Now())
+	require.NoError(t, err)
+	require.Len(t, reaped, 1, "the failed sandbox is the only thing due")
+	assert.Equal(t, ReapLimitFailed, reaped[0].Limit)
+	assert.NoError(t, reaped[0].Err)
+
+	_, err = f.manager.Get(rec.ID)
+	assert.ErrorIs(t, err, ErrNotFound, "and its record is gone, so the resources it named are free")
+}
+
+// TestAFailedSandboxWithNothingLeftKeepsItsRecord is the other side: a create that failed
+// and freed everything is the answer to "what happened to the sandbox I asked for", so
+// it is not reaped early just for being failed.
+func TestAFailedSandboxWithNothingLeftKeepsItsRecord(t *testing.T) {
+	rec := Record{ID: "sbx-clean-fail", State: StateFailed, Reason: "the image could not be pulled"}
+	rec.Updated = time.Now().Add(-time.Hour)
+
+	assert.False(t, rec.HoldsResidue(), "nothing is named, so nothing is held")
+	if limit, due := rec.ReapDue(time.Now()); due {
+		t.Fatalf("a failed record with no residue must not be reaped early, got limit %q", limit)
+	}
 }
