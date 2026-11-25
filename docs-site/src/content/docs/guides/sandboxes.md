@@ -384,6 +384,22 @@ teardown had to free.
 The VMM's serial console log (`<log-dir>/<id>.log`) is kept, as a task's log outlives
 its task. Log retention is not part of this slice.
 
+### Removing many sandboxes at once
+
+The API's rate limit is **per token**, and its defaults are 10 requests per second with a
+burst of 20 (`--api-rate-limit`, `--api-rate-burst` on the node). A single credential
+therefore cannot drive an unbounded `rm` loop: in a measured burst of 100 concurrent
+removals from one admin token, 76 were answered `rate_limited` and 24 proceeded. The
+refusal carries `retryAfterMs`, so a script that honours it drains the queue instead of
+failing — but a script that treats every non-zero exit as a hard failure will stop at the
+first refusals.
+
+Bulk cleanup is therefore either paced (honour `retryAfterMs`, or keep the concurrency at
+or under the burst) or spread across several admin tokens, since the bucket is keyed by
+identity: N tokens get N separate allowances. A rate limit that arrives during a
+legitimate bulk removal is the limit doing its job, not a teardown failure — nothing is
+left half-freed, because a refused request never reaches the teardown at all.
+
 ## States
 
 | State | What it means | How it is reached |
