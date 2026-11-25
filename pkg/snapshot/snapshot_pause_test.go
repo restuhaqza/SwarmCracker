@@ -339,3 +339,126 @@ func TestRestoreFromSnapshotFailsWhenTheDiskCannotBeWritten(t *testing.T) {
 
 	assert.FileExists(t, diskPath, "a failed restore must not consume the snapshot copy")
 }
+
+// The disk-copy mode is what makes a pause duration attributable: a reflink shares
+// the source's blocks and costs no data, while the same snapshot on a filesystem
+// without reflink costs its disk's size. These tests pin the three facts that keep
+// that reading honest — the mode is the copier's own answer, an old record with no
+// mode is not "no copy", and a create with no disk path really is "no copy".
+
+// TestSnapshotRecordsTheCopyModesTheCopierReported is the anti-second-source-of-truth
+// test: each mode the copier returns must be the mode the record carries. A value
+// filled in anywhere else — inferred from the filesystem, copied from a config, or
+// defaulted — would pass a test that only checked one mode, so this drives all four.
+func TestSnapshotRecordsTheCopyModesTheCopierReported(t *testing.T) {
+	for _, want := range []CopyMode{CopyReflink, CopySparse, CopyFull} {
+		t.Run(string(want), func(t *testing.T) {
+			root := t.TempDir()
+			socketPath, _ := fakeFirecrackerTimeline(t)
+
+			rootfsPath := filepath.Join(t.TempDir(), "task-1.ext4")
+			require.NoError(t, os.WriteFile(rootfsPath, testDiskContent(), 0o600))
+
+			mgr, err := NewManager(SnapshotConfig{SnapshotDir: root})
+			require.NoError(t, err)
+
+			original := copyDiskFile
+			t.Cleanup(func() { copyDiskFile = original })
+			copyDiskFile = func(ctx context.Context, src, dst string) (CopyMode, error) {
+				if _, err := original(ctx, src, dst); err != nil {
+					return CopyNone, err
+				}
+				return want, nil
+			}
+
+			info, err := mgr.CreateSnapshot(context.Background(), "task-1", socketPath, CreateOptions{
+				ServiceID:  "web",
+				RootfsPath: rootfsPath,
+			})
+			require.NoError(t, err)
+
+			require.NotNil(t, info.DiskCopy, "a create that copied a disk must record how")
+			assert.Equal(t, want, *info.DiskCopy,
+				"the recorded mode is the copier's answer, not a value derived elsewhere")
+
+			// The same value must survive the round trip through metadata.json, since
+			// that file is what a later listing or restore reads.
+			reloaded, err := loadMetadata(filepath.Join(root, info.ID))
+			require.NoError(t, err)
+			require.NotNil(t, reloaded.DiskCopy)
+			assert.Equal(t, want, *reloaded.DiskCopy)
+		})
+	}
+}
+
+// TestAnOldRecordWithoutACopyModeIsUnknownNotNone is the compatibility rule, and it
+// is the one a plain CopyMode would get wrong: the field's absence would decode as
+// the zero value, CopyNone, which says "no copy was made" about a snapshot whose
+// DiskPath names the copy that was made.
+func TestAnOldRecordWithoutACopyModeIsUnknownNotNone(t *testing.T) {
+	root := t.TempDir()
+	socketPath, _ := fakeFirecrackerTimeline(t)
+
+	rootfsPath := filepath.Join(t.TempDir(), "task-1.ext4")
+	require.NoError(t, os.WriteFile(rootfsPath, testDiskContent(), 0o600))
+
+	mgr, err := NewManager(SnapshotConfig{SnapshotDir: root})
+	require.NoError(t, err)
+
+	info, err := mgr.CreateSnapshot(context.Background(), "task-1", socketPath, CreateOptions{
+		ServiceID:  "web",
+		RootfsPath: rootfsPath,
+	})
+	require.NoError(t, err)
+
+	// Rewrite the record as a node that predates the field would have written it:
+	// every other key present, disk_copy absent.
+	path := filepath.Join(root, info.ID, metadataFile)
+	raw, err := os.ReadFile(path)
+	require.NoError(t, err)
+	var doc map[string]any
+	require.NoError(t, json.Unmarshal(raw, &doc))
+	delete(doc, "disk_copy")
+	stripped, err := json.MarshalIndent(doc, "", "  ")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(path, stripped, 0o600))
+
+	reloaded, err := loadMetadata(filepath.Join(root, info.ID))
+	require.NoError(t, err)
+
+	assert.Nil(t, reloaded.DiskCopy,
+		"an older record's missing mode is unknown — never CopyNone, which would deny a copy that DiskPath still names")
+	assert.NotEqual(t, "", reloaded.DiskPath, "and this record does name a disk copy, which is why the distinction matters")
+}
+
+// TestACreateWithNoDiskPathRecordsNoCopy is the other side: CopyNone is a fact, not
+// an absence. A create that knows no disk path makes no copy, and that is recorded
+// rather than left nil, so "unknown" and "none" stay two different answers.
+func TestACreateWithNoDiskPathRecordsNoCopy(t *testing.T) {
+	root := t.TempDir()
+	socketPath, _ := fakeFirecrackerTimeline(t)
+
+	mgr, err := NewManager(SnapshotConfig{SnapshotDir: root})
+	require.NoError(t, err)
+
+	original := copyDiskFile
+	t.Cleanup(func() { copyDiskFile = original })
+	copyDiskFile = func(context.Context, string, string) (CopyMode, error) {
+		t.Fatal("a create with no disk path must not copy a disk")
+		return CopyNone, nil
+	}
+
+	info, err := mgr.CreateSnapshot(context.Background(), "task-1", socketPath, CreateOptions{
+		ServiceID: "web",
+	})
+	require.NoError(t, err)
+
+	require.NotNil(t, info.DiskCopy, "no copy is a recorded fact, not a missing one")
+	assert.Equal(t, CopyNone, *info.DiskCopy)
+	assert.Empty(t, info.DiskPath)
+
+	reloaded, err := loadMetadata(filepath.Join(root, info.ID))
+	require.NoError(t, err)
+	require.NotNil(t, reloaded.DiskCopy, "and it survives the round trip as a fact too")
+	assert.Equal(t, CopyNone, *reloaded.DiskCopy)
+}

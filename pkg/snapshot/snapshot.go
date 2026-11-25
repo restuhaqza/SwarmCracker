@@ -144,6 +144,28 @@ type SnapshotInfo struct {
 	// existed; those restore exactly as they did.
 	DiskPath string `json:"disk_path,omitempty"`
 
+	// DiskCopy records how the snapshot-owned disk copy (DiskPath) was made: a
+	// reflink that shares the source's blocks, a sparse copy that keeps the holes,
+	// or a full byte copy. It is what makes a pause duration attributable — a
+	// reflink costs no data, and on a filesystem without reflink the same snapshot
+	// costs its disk's size — so an operator measuring a slow checkpoint can tell
+	// storage from product.
+	//
+	// It is a pointer on purpose, and the load rule is part of the format:
+	//
+	//   - nil means unknown: a metadata.json written before this field existed.
+	//     Read it as unknown, never as CopyNone. Such a record does have a disk
+	//     copy (DiskPath says so); only the mode went unrecorded, and reporting
+	//     "no copy was made" for it would be a worse answer than "not recorded".
+	//   - non-nil CopyNone means no copy was made, which happens when the create
+	//     knows no disk path. That is a fact about this snapshot, not an absence
+	//     of information, so it is recorded rather than left nil.
+	//
+	// A plain CopyMode could not express both: CopyNone is the zero value, so
+	// every older record would decode as "no copy was made" — the one answer that
+	// is certainly wrong for a snapshot whose DiskPath names a file.
+	DiskCopy *CopyMode `json:"disk_copy,omitempty"`
+
 	// Checksum is the SHA-256 checksum of the state file for integrity verification.
 	Checksum string `json:"checksum"`
 
@@ -561,7 +583,7 @@ func (m *Manager) CreateSnapshot(
 	// now, while the VM is still paused, so the snapshot is a restore point on its
 	// own and both images describe the same instant. Failure means the snapshot
 	// would be unusable after cleanup, so no snapshot is kept at all.
-	diskSize, err := copySnapshotDisk(ctx, targets.disk, stagingDiskPath)
+	diskSize, diskCopy, err := copySnapshotDisk(ctx, targets.disk, stagingDiskPath)
 	if err != nil {
 		return nil, err
 	}
@@ -606,6 +628,7 @@ func (m *Manager) CreateSnapshot(
 		RootfsPath: targets.rootfs,
 		Jailed:     targets.jailState != "",
 		DiskPath:   diskPath,
+		DiskCopy:   &diskCopy,
 		Checksum:   checksum,
 		Metadata:   opts.Metadata,
 	}
@@ -636,28 +659,35 @@ func (m *Manager) CreateSnapshot(
 		Str("snapshot_id", snapshotID).
 		Str("task_id", taskID).
 		Int64("size_bytes", info.SizeBytes).
+		Str("disk_copy", string(diskCopy)).
 		Msg("Snapshot created successfully")
 
 	return info, nil
 }
 
 // copySnapshotDisk copies the disk a create owns into the snapshot's staging
-// directory and reports its size. An empty source means the snapshot holds no disk
-// copy, which is what a create that knows no disk path produces.
-func copySnapshotDisk(ctx context.Context, source, dest string) (int64, error) {
+// directory and reports its size and how the copy was made. An empty source means
+// the snapshot holds no disk copy, which is what a create that knows no disk path
+// produces — reported as CopyNone, because that is a fact about this snapshot and
+// not a missing answer.
+//
+// The mode comes from the copy itself rather than being inferred afterwards: it is
+// a reflink only if the filesystem shared the blocks, and only the call that made
+// the copy knows which it got. Re-deriving it here would be a second source of
+// truth for the one number an operator uses to tell storage from product.
+func copySnapshotDisk(ctx context.Context, source, dest string) (int64, CopyMode, error) {
 	if source == "" {
-		return 0, nil
+		return 0, CopyNone, nil
 	}
-	// The snapshot keeps the bytes, not how they were copied: what a reflink buys
-	// and a plain copy costs is reported where an instance's own disk is staged.
-	if _, err := copyDiskFile(ctx, source, dest); err != nil {
-		return 0, fmt.Errorf("failed to copy task disk %s into the snapshot: %w", source, err)
+	mode, err := copyDiskFile(ctx, source, dest)
+	if err != nil {
+		return 0, CopyNone, fmt.Errorf("failed to copy task disk %s into the snapshot: %w", source, err)
 	}
 	size, err := fileSize(dest)
 	if err != nil {
-		return 0, fmt.Errorf("failed to stat snapshot disk copy: %w", err)
+		return 0, mode, fmt.Errorf("failed to stat snapshot disk copy: %w", err)
 	}
-	return size, nil
+	return size, mode, nil
 }
 
 // statCheckpoint reports a completed checkpoint's file sizes and the checksum of its
@@ -1441,6 +1471,11 @@ func loadMetadata(dir string) (*SnapshotInfo, error) {
 		return nil, err
 	}
 
+	// DiskCopy stays nil when the record predates the field, and nil is read as
+	// "unknown" by everything that consults it (see the field's own comment). It is
+	// deliberately not defaulted here: a record whose DiskPath names a file did have
+	// a copy, so filling in CopyNone would report "no copy was made" for a snapshot
+	// that has one. Only a record written with CopyNone says that.
 	// Resolve paths relative to snapshot directory
 	if !filepath.IsAbs(info.MemoryPath) {
 		info.MemoryPath = filepath.Join(dir, "vm.mem")
