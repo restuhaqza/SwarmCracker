@@ -37,6 +37,14 @@ const (
 	// stopPoll is how often a teardown asks whether the process is gone.
 	stopPoll = 25 * time.Millisecond
 
+	// cgroupReleaseGrace is how long a cgroup removal waits for the kernel to let go of
+	// a process that has already exited. A signalled VMM leaves the scheduler before it
+	// leaves its cgroup, so "the process is gone" and "the cgroup is empty" are two
+	// different instants and the second can trail the first under load — six of 100
+	// concurrent removals observed the gap. It is short because it is a wait for the
+	// kernel to finish tidying, not for a process to die.
+	cgroupReleaseGrace = 2 * time.Second
+
 	// cgroupBase is the cgroup v2 hierarchy the jailer creates an instance's cgroup
 	// under (snapshot.JailedLauncher's jailedCgroupBase). It is the node's one
 	// hierarchy, not configuration.
@@ -117,6 +125,11 @@ func (m *Manager) Remove(ctx context.Context, id string) (Freed, error) {
 
 	freed := Freed{ID: rec.ID}
 	if err := m.stopVM(ctx, &rec, &freed); err != nil {
+		// A teardown that stops here leaves a sandbox the caller asked to remove still
+		// holding a process, a jail or a cgroup. Until now the only trace was the retry
+		// that later succeeded, which reads as a slow removal rather than a failed one.
+		log.Warn().Err(err).Str("sandbox_id", rec.ID).Str("state", string(rec.State)).
+			Msg("Could not free a sandbox; its record stays so the next removal retries it")
 		return freed, err
 	}
 
@@ -132,6 +145,8 @@ func (m *Manager) Remove(ctx context.Context, id string) (Freed, error) {
 	}
 
 	if err := m.freeResidual(ctx, &rec, &freed); err != nil {
+		log.Warn().Err(err).Str("sandbox_id", rec.ID).
+			Msg("Could not free everything a sandbox held; its record stays so the next removal retries it")
 		return freed, err
 	}
 
@@ -348,24 +363,41 @@ func removeFile(path string) error {
 
 // removeCgroup removes one cgroup directory and reports whether there was one. An
 // absent directory is done, and a directory the kernel still holds (a process in it, a
-// controller reference) is the caller's to report.
+// controller reference) is retried for a bounded time before it is the caller's to
+// report.
+//
+// The retry is not politeness: a VMM that has just been signalled is gone from the
+// scheduler before it leaves its cgroup, and its /proc entry is gone slightly before
+// cgroup.procs lets go of it. Teardown asks ProcessAlive first, which reads /proc — so
+// there is a window in which the process is "dead" by that check and still a member
+// here, and rmdir answers EBUSY. Measured on a host with 100 concurrent rm: six of them
+// landed in that window, each reporting a busy cgroup for a sandbox that was already
+// gone. Waiting for the kernel to finish is what makes teardown idempotent in practice
+// rather than only in the absence of load.
 //
 // "Whether there was one" is the answer a teardown report needs: an instance whose
 // launcher created no cgroup has none to free, and saying it removed one would be a
 // claim it cannot support.
 func removeCgroup(path string) (bool, error) {
-	err := os.Remove(path)
-	switch {
-	case err == nil:
-		return true, nil
-	case errors.Is(err, os.ErrNotExist):
-		return false, nil
-	case errors.Is(err, syscall.EBUSY), errors.Is(err, syscall.ENOTEMPTY):
-		// A cgroup with a process in it, or with a child, is still in use: the
-		// caller's before-the-fact check (the process is gone) makes this the rare
-		// case, and saying so is better than pretending it was removed.
-		return false, fmt.Errorf("cgroup %s is still in use: %w", path, err)
-	default:
-		return false, err
+	deadline := time.Now().Add(cgroupReleaseGrace)
+	var err error
+	for {
+		err = os.Remove(path)
+		switch {
+		case err == nil:
+			return true, nil
+		case errors.Is(err, os.ErrNotExist):
+			return false, nil
+		case errors.Is(err, syscall.EBUSY), errors.Is(err, syscall.ENOTEMPTY):
+			if time.Now().Before(deadline) {
+				time.Sleep(stopPoll)
+				continue
+			}
+			// Still held after the grace: a process or child cgroup the caller did not
+			// account for. Saying so is better than pretending it was removed.
+			return false, fmt.Errorf("cgroup %s is still in use after %s: %w: %w", path, cgroupReleaseGrace, ErrInUse, err)
+		default:
+			return false, err
+		}
 	}
 }

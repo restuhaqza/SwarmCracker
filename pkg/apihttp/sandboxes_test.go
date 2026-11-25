@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -685,6 +686,32 @@ func TestRemoveSandboxMapsItsFailure(t *testing.T) {
 	rec := sandboxRequest(t, srv, admin, http.MethodDelete, "/v1/sandboxes/a", "")
 	require.Equal(t, http.StatusNotFound, rec.Code, rec.Body.String())
 	assert.Equal(t, string(output.CodeNotFound), decodeErrorBody(t, rec).Error.Code)
+}
+
+// TestRemoveSandboxReportsAResourceStillInUse pins the code a teardown that could not
+// free a cgroup answers with, and the one it must not.
+//
+// A host run removing 100 sandboxes at once saw six fail with "cgroup ... is still in
+// use: device or resource busy" — a resource the node holds, released a moment after
+// the VMM exits. That error used to reach the caller as `unreachable`, which says the
+// node could not be reached by a node that had just answered. The caller's instruction
+// is "try again", so the code is unavailable: 503, retryable, and the reason is named.
+func TestRemoveSandboxReportsAResourceStillInUse(t *testing.T) {
+	boxes := &fakeSandboxes{removeErr: fmt.Errorf("sandbox sbx-1: remove its cgroup: %w: %w",
+		sandbox.ErrInUse, fmt.Errorf("cgroup /sys/fs/cgroup/x/sbx-1 is still in use: %w", syscall.EBUSY))}
+	srv, store := sandboxServer(t, boxes)
+	admin, _, err := store.Create("admin", RoleAdmin)
+	require.NoError(t, err)
+
+	rec := sandboxRequest(t, srv, admin, http.MethodDelete, "/v1/sandboxes/a", "")
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code, rec.Body.String())
+
+	doc := decodeErrorBody(t, rec)
+	assert.Equal(t, string(output.CodeUnavailable), doc.Error.Code,
+		"a resource this node still holds is not an unreachable node")
+	assert.True(t, doc.Error.Retryable, "the caller's instruction is to try again")
+	assert.Equal(t, "resource_in_use", doc.Error.Details["reason"])
+	assert.Contains(t, doc.Error.Message, "still in use", "and the cause reaches the caller")
 }
 
 // TestExecSandboxRequiresTheV1MediaType pins the one header the stream route insists on:

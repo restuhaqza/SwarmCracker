@@ -102,6 +102,7 @@ func (m *Manager) Reap(ctx context.Context, now time.Time) ([]Reaped, error) {
 		if err != nil {
 			entry.Err = err
 			log.Warn().Err(err).Str("sandbox_id", rec.ID).Str("limit", entry.Limit).
+				Str("state", string(rec.State)).
 				Msg("Could not reap a sandbox past its limit; it stays for the next pass")
 		} else {
 			entry.Freed = freed
@@ -109,14 +110,26 @@ func (m *Manager) Reap(ctx context.Context, now time.Time) ([]Reaped, error) {
 			// about: it is published after it succeeded, like every other change, and
 			// it carries no record because there is none any more.
 			m.publish(RemovalChange(rec.ID, m.now()))
-			log.Info().
-				Str("sandbox_id", rec.ID).
-				Str("state", string(rec.State)).
-				Str("limit", entry.Limit).
-				Dur("idle_for", entry.IdleFor).
-				Dur("ttl", rec.TTL()).
-				Dur("max_ttl", rec.MaxTTL()).
-				Msg("Reaped a sandbox past its limit")
+			// The two reasons a reap happens read differently on purpose: a TTL is
+			// time passing, a retried teardown is the node finishing what a failed
+			// removal started, and an operator reading the log needs to tell them apart.
+			if entry.Limit == ReapLimitFailed {
+				log.Info().
+					Str("sandbox_id", rec.ID).
+					Str("state", string(rec.State)).
+					Str("reason", rec.Reason).
+					Dur("failed_for", rec.FailedFor(now)).
+					Msg("Freed a failed sandbox whose teardown had not finished")
+			} else {
+				log.Info().
+					Str("sandbox_id", rec.ID).
+					Str("state", string(rec.State)).
+					Str("limit", entry.Limit).
+					Dur("idle_for", entry.IdleFor).
+					Dur("ttl", rec.TTL()).
+					Dur("max_ttl", rec.MaxTTL()).
+					Msg("Reaped a sandbox past its limit")
+			}
 		}
 		reaped = append(reaped, entry)
 	}

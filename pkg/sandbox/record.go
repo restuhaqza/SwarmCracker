@@ -140,6 +140,17 @@ var ErrNotReady = errors.New("sandbox: the sandbox is not ready")
 // ErrInvalid means the request could not describe a sandbox this node can build.
 var ErrInvalid = errors.New("sandbox: invalid request")
 
+// ErrInUse means a resource this node still holds could not be freed: a cgroup a
+// process has not yet left, a namespace a socket still sits in. It is not a transport
+// failure and not a bad request — the node reached the sandbox and the sandbox's own
+// resources were the obstacle — so a caller is told to try again rather than to fix
+// its request or to check its network.
+//
+// It exists because the alternative was worse: an unclassified teardown failure leaves
+// pkg/apihttp with nothing to map it to, and the gRPC classifier then calls it
+// "unreachable" — a claim that the node cannot be reached, for a node that answered.
+var ErrInUse = errors.New("sandbox: a resource the sandbox holds is still in use")
+
 // Record is the node's control-plane record of one sandbox.
 //
 // It is a node-local document, not a public one: it holds host paths and the
@@ -405,7 +416,7 @@ func (r Record) Deadline() time.Time {
 	return idle
 }
 
-// The two limits a sandbox can reach, as ReapDue reports them.
+// The limits a sandbox can reach, as ReapDue reports them.
 const (
 	// ReapLimitIdle is the limit a sandbox reached by sitting unused past its idle
 	// TTL — the limit an exec pushes back.
@@ -413,13 +424,38 @@ const (
 	// ReapLimitMax is the limit a sandbox reached by outliving its maximum lifetime,
 	// which an exec cannot push back.
 	ReapLimitMax = "max_ttl"
+	// ReapLimitFailed is a sandbox the node marked failed but could not free. It is not
+	// a TTL: it is the retry of a teardown that failed, and the record is the only
+	// handle to what it left behind.
+	ReapLimitFailed = "failed"
 )
+
+// failedRetryAfter is how long a failed sandbox is left alone before the reaper tries
+// its teardown again.
+//
+// It is short because a failed teardown that is going to succeed on a second attempt
+// does so almost at once — the cgroup a process had not yet left is released within a
+// second — and long enough that a caller reading the record right after the failure sees
+// the reason rather than a record that vanished. A node restarting is the same case: the
+// reaper's first pass collects what a previous life could not free.
+const failedRetryAfter = 30 * time.Second
 
 // ReapDue reports which limit takes this sandbox back at now, and whether one does.
 // A sandbox past both is reported against the limit whose deadline came first, because
 // that is the limit that took it: the idle TTL and the maximum lifetime run side by
 // side, and whichever is reached first is the one that decides.
+//
+// A failed sandbox that still holds residue is due once it has been failed for
+// failedRetryAfter, whatever its TTLs say. It is not a sandbox waiting for anyone: the
+// node already decided it could not be made usable, and a teardown that failed leaves
+// the record holding the paths to a netns, a VMM, a jail and a disk, so the record is
+// the only handle that can free them. Without this rule the only retry is a caller
+// asking again — and a create that failed at removal has no caller left, so those
+// resources were permanent.
 func (r Record) ReapDue(now time.Time) (string, bool) {
+	if r.State == StateFailed && r.HoldsResidue() && r.FailedFor(now) >= failedRetryAfter {
+		return ReapLimitFailed, true
+	}
 	maxDue, idleDue := r.MaxExpired(now), r.Idle(now)
 	switch {
 	case maxDue && idleDue:
@@ -433,6 +469,29 @@ func (r Record) ReapDue(now time.Time) (string, bool) {
 		return ReapLimitIdle, true
 	}
 	return "", false
+}
+
+// HoldsResidue reports whether a failed sandbox still names resources a teardown did
+// not free. It is the question the reaper asks before retrying a failed sandbox:
+// `fail` clears these fields when it freed everything, so a record that still has them
+// is one whose teardown did not finish, and the record is the only handle to what it
+// left behind.
+//
+// A failed record with nothing left is deliberately not residue: it is the answer to
+// "what happened to the sandbox I asked for", and it keeps its TTL and its reason until
+// the ordinary reaper or a caller removes it.
+func (r Record) HoldsResidue() bool {
+	return r.NetNS != "" || r.Disk != "" || r.JailRoot != "" || r.VsockPath != "" ||
+		r.AgentTokenFile != ""
+}
+
+// FailedFor is how long this sandbox has been in the failed state, or zero when it has
+// never been marked. It is measured from Updated, which every state write moves.
+func (r Record) FailedFor(now time.Time) time.Duration {
+	if r.State != StateFailed || r.Updated.IsZero() || now.Before(r.Updated) {
+		return 0
+	}
+	return now.Sub(r.Updated)
 }
 
 // ReadyAtDuration is how long the sandbox took to become ready, or zero if it never

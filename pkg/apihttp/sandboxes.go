@@ -726,6 +726,14 @@ func sandboxAPIError(err error) error {
 		return output.NewError(output.CodeConflict, err.Error())
 	case errors.Is(err, sandbox.ErrNotExposed):
 		return output.NewError(output.CodeNotFound, err.Error())
+	case errors.Is(err, sandbox.ErrInUse):
+		// The node answered; a resource the sandbox holds has not been released yet.
+		// 503 with retryable is the honest instruction: try again, do not fix the
+		// request and do not go looking for a network fault. Left unclassified it would
+		// fall through to the gRPC classifier and be reported as unreachable, which is
+		// the one thing this failure is not.
+		return output.NewError(output.CodeUnavailable, err.Error()).
+			WithDetails(map[string]any{"reason": "resource_in_use"})
 	}
 
 	// A template's refusal carries its own stable code (pkg/golden). Reading it from
